@@ -65,7 +65,7 @@ class CarController(application: Application) : AndroidViewModel(application) {
     private val _picking = MutableStateFlow(false)
     val picking: StateFlow<Boolean> = _picking.asStateFlow()
 
-    /* ---- Estado de envio ----
+    /* ---- Send state ----
        Only one GATT write may be in flight, and a press can change the wanted
        speed faster than the radio can carry it. So instead of a queue of motion
        commands — which would keep the car driving after the button came up — the

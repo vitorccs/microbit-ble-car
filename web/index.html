@@ -334,11 +334,11 @@
     <section class="side">
         <div class="action-pad" role="group" aria-label="Botões">
             <button class="action a" data-command="A"
-                    aria-label="A: carinha feliz e LEDs amarelos">A</button>
+                    aria-label="A: liga e desliga os LEDs">A</button>
             <button class="action b" data-command="B"
                     aria-label="B: carinha zangada e buzina">B</button>
             <button class="action c" data-command="C"
-                    aria-label="C: apagar faróis">C</button>
+                    aria-label="C: muda a cor dos LEDs">C</button>
             <button class="action d free" data-command="D"
                     aria-label="D: sem função no micro:bit">D</button>
         </div>
@@ -358,7 +358,7 @@
 "use strict";
 
 /* ==================================================================
-   1. Constantes globais
+   1. Global constants
    ================================================================== */
 
 /* ------------------------------------------------------------------
@@ -456,7 +456,7 @@ class CarController {
         this.writeInFlight = false;   // one GATT write at a time, or it throws
         this.statusLock = false;      // don't overwrite the "connecting..." message
 
-        /* ---- Estado de envio ----
+        /* ---- Send state ----
            Only one GATT write may be in flight, and a press can change the wanted
            speed faster than the radio can carry it. So instead of a queue of motion
            commands — which would keep the car driving after the button came up — the
@@ -469,7 +469,7 @@ class CarController {
         this.lastReported   = "";
         this.actionQueue    = [];
 
-        /* ---- Botões pressionados ---- */
+        /* ---- Buttons held down ---- */
         this.held = new Set();   // direction buttons currently down
     }
 
@@ -904,7 +904,7 @@ class CarController {
 }
 
 /* ==================================================================
-   3. Instanciação e inicialização
+   3. Instantiation and startup
    ================================================================== */
 
 const controller = new CarController();
