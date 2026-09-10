@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -191,13 +192,17 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
                     .align(Alignment.Center)
                     .widthIn(max = 900.dp)
                     .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                    /* The panel takes the whole safe area: with the pads sized by
+                       `scale` the leftover height becomes breathing room between
+                       them instead of a band of empty background. */
+                    .fillMaxHeight()
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
                     .clip(RoundedCornerShape((36 * scale).dp))
                     .background(Palette.panel)
-                    .padding(horizontal = (26 * scale).dp, vertical = (14 * scale).dp),
+                    .padding(horizontal = (26 * scale).dp, vertical = (16 * scale).dp),
             ) {
                 Row(
-                    Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth().align(Alignment.Center),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -210,7 +215,7 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
 
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy((10 * scale).dp),
+                        verticalArrangement = Arrangement.spacedBy((16 * scale).dp),
                         modifier = Modifier.padding(horizontal = 8.dp),
                     ) {
                         Text(
