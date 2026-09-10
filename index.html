@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#202124">
+<title>Micro:bit Car Controller</title>
+<style>
+    :root {
+        --bg: #202124;
+        --panel: #292b2f;
+        --panel-dark: #1a1b1e;
+        --text: #f5f5f5;
+        --muted: #a9adb5;
+        --blue: #4285f4;
+        --blue-dark: #2f6edb;
+        --red: #e74c3c;
+        --green: #34a853;
+        --purple: #8e5bd9;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        overscroll-behavior: none;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .controller {
+        width: min(900px, 96vw);
+        height: min(560px, 94vh);
+        min-height: 420px;
+        background: var(--panel);
+        border-radius: 42px;
+        box-shadow:
+            0 24px 60px rgba(0,0,0,.45),
+            inset 0 2px 0 rgba(255,255,255,.05);
+        padding: 38px 48px;
+        display: grid;
+        grid-template-columns: 1fr 170px 1fr;
+        align-items: center;
+        gap: 20px;
+        position: relative;
+    }
+
+    .side {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+
+    /* D-pad */
+    .dpad {
+        width: 190px;
+        height: 190px;
+        position: relative;
+    }
+
+    .dpad button {
+        position: absolute;
+        width: 68px;
+        height: 68px;
+        border: 0;
+        color: white;
+        background: #45484f;
+        box-shadow:
+            inset 0 -5px 0 #292b30,
+            0 5px 8px rgba(0,0,0,.3);
+        cursor: pointer;
+        font-size: 30px;
+        font-weight: 700;
+        touch-action: none;
+        transition: transform .05s, background .05s;
+    }
+
+    .dpad button.active {
+        transform: translateY(4px);
+        box-shadow: inset 0 -1px 0 #292b30, 0 2px 4px rgba(0,0,0,.3);
+        background: #5b5f67;
+    }
+
+    .dpad button:focus-visible,
+    .action:focus-visible,
+    .bluetooth:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 3px;
+    }
+
+    .up    { left: 61px; top: 0; border-radius: 12px 12px 4px 4px; }
+    .left  { left: 0; top: 61px; border-radius: 12px 4px 4px 12px; }
+    .right { right: 0; top: 61px; border-radius: 4px 12px 12px 4px; }
+    .down  { left: 61px; bottom: 0; border-radius: 4px 4px 12px 12px; }
+
+    .dpad::after {
+        content: "";
+        position: absolute;
+        left: 61px;
+        top: 61px;
+        width: 68px;
+        height: 68px;
+        background: #36383e;
+        pointer-events: none;
+    }
+
+    /* A/B/C/D buttons */
+    .action-pad {
+        width: 210px;
+        height: 210px;
+        position: relative;
+    }
+
+    .action {
+        position: absolute;
+        width: 72px;
+        height: 72px;
+        border-radius: 50%;
+        border: 0;
+        color: white;
+        font-size: 25px;
+        font-weight: 800;
+        cursor: pointer;
+        box-shadow: inset 0 -6px 0 rgba(0,0,0,.25), 0 6px 10px rgba(0,0,0,.3);
+        transition: transform .05s;
+        touch-action: none;
+    }
+
+    .action.active {
+        transform: translateY(4px);
+        box-shadow: inset 0 -2px 0 rgba(0,0,0,.25), 0 2px 5px rgba(0,0,0,.3);
+    }
+
+    .a { left: 0; top: 69px; background: #e84393; }
+    .b { right: 0; top: 69px; background: #e74c3c; }
+    .c { left: 69px; top: 0; background: #3498db; }
+    .d { left: 69px; bottom: 0; background: #f39c12; }
+
+    /* D has no branch in the MakeCode program yet. */
+    .action.free { opacity: .5; }
+
+    .center {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 24px;
+    }
+
+    .brand {
+        text-align: center;
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: .5px;
+        color: #ddd;
+    }
+
+    .bluetooth {
+        width: 118px;
+        height: 118px;
+        border: 0;
+        border-radius: 50%;
+        background: var(--blue);
+        color: white;
+        font-size: 42px;
+        line-height: 1;
+        cursor: pointer;
+        box-shadow:
+            inset 0 -8px 0 var(--blue-dark),
+            0 9px 18px rgba(0,0,0,.35);
+        transition: transform .08s, background .15s;
+    }
+
+    .bluetooth:hover { background: #4f91f7; }
+
+    .bluetooth:active {
+        transform: translateY(6px);
+        box-shadow: inset 0 -2px 0 var(--blue-dark), 0 3px 8px rgba(0,0,0,.3);
+    }
+
+    .bluetooth.connected {
+        background: var(--green);
+        box-shadow: inset 0 -8px 0 #24883f, 0 9px 18px rgba(0,0,0,.35);
+    }
+
+    .bluetooth.busy {
+        pointer-events: none;
+        animation: pulse 1s ease-in-out infinite;
+    }
+
+    @keyframes pulse { 50% { opacity: .45; } }
+
+    .status {
+        text-align: center;
+        font-size: 13px;
+        color: var(--muted);
+        min-height: 38px;
+        line-height: 19px;
+    }
+
+    .status.error { color: #ff7b6e; }
+
+    .speed {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        width: 100%;
+    }
+
+    .speed label {
+        font-size: 11px;
+        letter-spacing: .5px;
+        color: var(--muted);
+    }
+
+    .speed input {
+        width: 100%;
+        max-width: 130px;
+        accent-color: var(--blue);
+        touch-action: none;
+    }
+
+    .legend {
+        position: absolute;
+        bottom: 17px;
+        left: 0;
+        right: 0;
+        text-align: center;
+        color: #777b83;
+        font-size: 11px;
+    }
+
+    /* Diagnostic log */
+    .log-toggle {
+        position: absolute;
+        right: 22px;
+        bottom: 12px;
+        width: 24px;
+        height: 24px;
+        border: 0;
+        border-radius: 50%;
+        background: #35383e;
+        color: #8b9099;
+        font-size: 12px;
+        font-weight: 800;
+        cursor: pointer;
+    }
+
+    .log-toggle:hover { background: #43464d; color: var(--text); }
+
+    .log {
+        display: none;
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        max-height: 36vh;
+        overflow-y: auto;
+        margin: 0;
+        padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+        border-top: 1px solid #3a3d44;
+        background: rgba(16,17,20,.96);
+        color: #7ee2a8;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 11px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        user-select: text;
+        -webkit-user-select: text;
+        z-index: 10;
+    }
+
+    body.show-log .log { display: block; }
+
+    @media (max-width: 700px) {
+        .controller {
+            width: 98vw;
+            height: 96vh;
+            padding: 25px 18px;
+            grid-template-columns: 1fr 110px 1fr;
+            gap: 5px;
+            border-radius: 28px;
+        }
+
+        .dpad { transform: scale(.78); }
+        .action-pad { transform: scale(.78); }
+        .bluetooth { width: 82px; height: 82px; font-size: 30px; }
+        .brand { font-size: 13px; }
+        .status { font-size: 11px; }
+        .legend { display: none; }
+    }
+</style>
+</head>
+
+<body>
+<main class="controller">
+    <section class="side">
+        <div class="dpad" role="group" aria-label="Direção">
+            <button class="up" data-command="UP" aria-label="Frente">▲</button>
+            <button class="left" data-command="LEFT" aria-label="Esquerda">◀</button>
+            <button class="right" data-command="RIGHT" aria-label="Direita">▶</button>
+            <button class="down" data-command="DOWN" aria-label="Ré">▼</button>
+        </div>
+    </section>
+
+    <section class="center">
+        <div class="brand">MICRO:BIT<br>CAR</div>
+        <button id="bluetooth" class="bluetooth" title="Conectar ao micro:bit"
+                aria-label="Conectar Bluetooth"><span id="bluetooth-label">ᛒ</span></button>
+        <div id="status" class="status" role="status" aria-live="polite">Bluetooth desconectado</div>
+
+        <div class="speed">
+            <label for="speed">VELOCIDADE <span id="speed-value">50</span></label>
+            <input id="speed" type="range" min="20" max="100" step="5" value="50"
+                   aria-label="Velocidade do carro">
+        </div>
+    </section>
+
+    <section class="side">
+        <div class="action-pad" role="group" aria-label="Botões">
+            <button class="action a" data-command="A"
+                    aria-label="A: carinha feliz e LEDs amarelos">A</button>
+            <button class="action b" data-command="B"
+                    aria-label="B: carinha zangada e buzina">B</button>
+            <button class="action c" data-command="C"
+                    aria-label="C: apagar faróis">C</button>
+            <button class="action d free" data-command="D"
+                    aria-label="D: sem função no micro:bit">D</button>
+        </div>
+    </section>
+
+    <div class="legend">
+        Segure para andar &nbsp;·&nbsp; combine duas setas para curvar &nbsp;·&nbsp; setas ou WASD para dirigir &nbsp;·&nbsp; J K L para A B C
+    </div>
+
+    <button id="log-toggle" class="log-toggle" title="Registro de diagnóstico"
+            aria-label="Mostrar registro de diagnóstico">?</button>
+</main>
+
+<pre id="log" class="log" aria-live="polite"></pre>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------
+   Nordic UART Service, as exposed by MakeCode's bluetooth.startUartService().
+   The micro:bit reads with uartReadUntil("\n"), so each command needs an LF.
+   ------------------------------------------------------------------ */
+const UART_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+
+/* The micro:bit's UART profile is inverted relative to the usual Nordic UART
+   convention: 6e400002 is the micro:bit's TX (notify only) and 6e400003 is its
+   RX (write). Writing to 0002 fails with "GATT Error: Not supported". */
+const UART_RX      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"; // write:  browser -> micro:bit
+const UART_TX      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // notify: micro:bit -> browser
+
+/* ------------------------------------------------------------------
+   Protocol (see the MakeCode program in README/comments below):
+
+     M,<left>,<right>   set both motor speeds, from -100 to 100, and keep
+                        them running until the next command
+     S                  stop
+     A | B | C          one-shot actions
+
+   The old program used moveTime(), which drives for a fixed time and then
+   stops on its own, so holding a button could only ever produce a stutter of
+   short bursts. Speeds latch instead, and the browser sends a heartbeat while
+   moving so the micro:bit's watchdog can stop the car if the link dies. */
+
+const HEARTBEAT_MS = 350;   // must stay well under the micro:bit's watchdog
+const TURN_RATIO   = 0.7;   // how much a sideways press biases the wheels
+const SPIN_RATIO   = 0.75;  // speed used when turning in place
+
+/* Commands the micro:bit has no branch for: they land in the empty `else`. */
+const UNHANDLED = new Set(["D"]);
+
+const IDLE_GLYPH = "ᛒ";
+const LIVE_GLYPH = "✓";
+
+let device = null;
+let rxCharacteristic = null;
+let writeInFlight = false;   // one GATT write at a time, or it throws
+let statusLock = false;      // don't overwrite the "connecting..." message
+
+const bluetoothButton = document.getElementById("bluetooth");
+const bluetoothLabel  = document.getElementById("bluetooth-label");
+const statusEl        = document.getElementById("status");
+
+function setStatus(text, isError) {
+    statusEl.textContent = text;
+    statusEl.classList.toggle("error", Boolean(isError));
+}
+
+/* -------------------------------- Log --------------------------------
+   Errors here are easy to miss in the small status line, so every send
+   and every failure is also written to a panel toggled by the ? button. */
+
+const logEl = document.getElementById("log");
+const logLines = [];
+
+function log(line) {
+    const stamp = new Date().toLocaleTimeString("pt-BR", { hour12: false });
+    logLines.push(stamp + "  " + line);
+    if (logLines.length > 80) logLines.shift();
+    logEl.textContent = logLines.join("\n");
+    logEl.scrollTop = logEl.scrollHeight;
+    console.log("[car] " + line);
+}
+
+function describe(error) {
+    if (!error) return "erro desconhecido";
+    return (error.name || "Error") + ": " + (error.message || String(error));
+}
+
+document.getElementById("log-toggle").addEventListener("click", () => {
+    document.body.classList.toggle("show-log");
+});
+
+/* ----------------------------- Connection ----------------------------- */
+
+function unsupportedReason() {
+    if (!window.isSecureContext) {
+        return "Abra a página em HTTPS ou localhost para usar Bluetooth.";
+    }
+    if (!navigator.bluetooth) {
+        return "Este navegador não suporta Web Bluetooth. Use Chrome, Edge ou Opera.";
+    }
+    return null;
+}
+
+async function connect() {
+    const reason = unsupportedReason();
+    if (reason) {
+        setStatus(reason, true);
+        return;
+    }
+
+    try {
+        setStatus("Escolha o seu micro:bit na lista...");
+
+        /* The micro:bit does not advertise the UART service in its
+           advertisement packet, so filtering only by service finds nothing.
+           Filter by name and request UART as an optional service. */
+        device = await navigator.bluetooth.requestDevice({
+            filters: [
+                { namePrefix: "BBC micro:bit" },
+                { namePrefix: "micro:bit" },
+                { services: [UART_SERVICE] }
+            ],
+            optionalServices: [UART_SERVICE]
+        });
+
+        device.addEventListener("gattserverdisconnected", onDisconnected);
+
+        bluetoothButton.classList.add("busy");
+        setStatus("Conectando...");
+        statusLock = true;
+
+        log("dispositivo: " + (device.name || "(sem nome)"));
+
+        const server  = await device.gatt.connect();
+        const service = await server.getPrimaryService(UART_SERVICE);
+        rxCharacteristic = await service.getCharacteristic(UART_RX);
+
+        const props = rxCharacteristic.properties || {};
+        log("características de escrita: write=" + Boolean(props.write) +
+            " writeWithoutResponse=" + Boolean(props.writeWithoutResponse));
+
+        /* The micro:bit's RX characteristic always advertises write. If it does
+           not, we are talking to the wrong characteristic, so dump the whole
+           service instead of failing silently on the first button press. */
+        if (!props.write && !props.writeWithoutResponse) {
+            await describeService(service);
+            log("PROBLEMA: a característica " + UART_RX + " não aceita escrita.");
+            statusLock = false;
+            reset();
+            setStatus("Serviço UART inacessível — veja o log", true);
+            document.body.classList.add("show-log");
+            return;
+        }
+
+        /* Listening to the notify characteristic is not needed to drive the
+           car, but anything arriving here proves the link really works. */
+        try {
+            const tx = await service.getCharacteristic(UART_TX);
+            await tx.startNotifications();
+            tx.addEventListener("characteristicvaluechanged", event => {
+                log("micro:bit disse: " + new TextDecoder().decode(event.target.value));
+            });
+            log("notificações ativas");
+        } catch (error) {
+            log("sem notificações (" + describe(error) + ") — não impede o controle");
+        }
+
+        statusLock = false;
+        bluetoothButton.classList.remove("busy");
+        bluetoothButton.classList.add("connected");
+        bluetoothLabel.textContent = LIVE_GLYPH;
+        /* The pump opens with an "S" so the car is known to be stopped; keep
+           that off the status line so the connection message survives. */
+        lastReported = "S";
+        setStatus("Conectado a " + (device.name || "micro:bit"));
+        log("conectado");
+    } catch (error) {
+        statusLock = false;
+        reset();
+
+        if (error && error.name === "NotFoundError") {
+            setStatus("Nenhum micro:bit escolhido.");
+            log("seleção cancelada");
+        } else {
+            log("ERRO ao conectar: " + describe(error));
+            setStatus("Falha ao conectar — veja o log", true);
+        }
+    }
+}
+
+/* Dumps every characteristic the browser thinks the UART service has, which
+   is what distinguishes a stale cache from a genuinely different service. */
+async function describeService(service) {
+    try {
+        const characteristics = await service.getCharacteristics();
+        log("características encontradas no serviço UART: " + characteristics.length);
+        characteristics.forEach(characteristic => {
+            const p = characteristic.properties || {};
+            const flags = Object.keys(p).filter(key => p[key]);
+            log("  " + characteristic.uuid + " → " +
+                (flags.length ? flags.join(", ") : "(nenhuma propriedade)"));
+        });
+    } catch (error) {
+        log("não foi possível listar as características: " + describe(error));
+    }
+}
+
+function onDisconnected() {
+    reset();
+    setStatus("Bluetooth desconectado");
+}
+
+function reset() {
+    rxCharacteristic = null;
+    writeInFlight = false;
+    clearHeld();             // silently: there is no link left to send "S" over
+    actionQueue.length = 0;
+    desiredMotion = "S";
+    lastSentMotion = null;   // the next connection must resend the state
+    lastReported = "";
+    bluetoothButton.classList.remove("connected", "busy");
+    bluetoothLabel.textContent = IDLE_GLYPH;
+}
+
+bluetoothButton.addEventListener("click", async () => {
+    if (device && device.gatt && device.gatt.connected) {
+        /* Stop the wheels before dropping the link, instead of leaving the car
+           rolling until its watchdog fires. */
+        releaseAll();
+        await new Promise(resolve => setTimeout(resolve, 150));   // let "S" go out
+        device.gatt.disconnect();   // fires gattserverdisconnected
+    } else {
+        connect();
+    }
+});
+
+/* ------------------------------- Sending ------------------------------- */
+
+/* Only one GATT write may be in flight, and a press can change the wanted
+   speed faster than the radio can carry it. So instead of a queue of motion
+   commands — which would keep the car driving after the button came up — the
+   pump keeps a single *desired* state and always sends the newest one. One-shot
+   actions (A/B/C) are different: every one of them has to arrive, so they get a
+   real queue and jump ahead of motion. */
+
+let desiredMotion  = "S";   // the state the car should be in right now
+let lastSentMotion = null;  // the state we last managed to put on the wire
+let lastMotionAt   = 0;
+let lastReported   = "";
+const actionQueue  = [];
+
+function setMotion(command) {
+    desiredMotion = command;
+    pump();
+}
+
+function sendAction(command) {
+    actionQueue.push(command);
+    pump();
+}
+
+/* What, if anything, still needs to go out. */
+function nextPayload() {
+    if (actionQueue.length) return actionQueue.shift();
+
+    if (desiredMotion !== lastSentMotion) return desiredMotion;
+
+    /* Moving: keep the watchdog fed. Stopped: nothing to say. */
+    if (desiredMotion !== "S" && performance.now() - lastMotionAt >= HEARTBEAT_MS) {
+        return desiredMotion;
+    }
+
+    return null;
+}
+
+async function pump() {
+    if (writeInFlight) return;   // the running pump will pick up the new state
+
+    if (!rxCharacteristic) {
+        if (desiredMotion !== "S" || actionQueue.length) {
+            actionQueue.length = 0;
+            desiredMotion = "S";
+            setStatus("Conecte o micro:bit primeiro.", true);
+        }
+        return;
+    }
+
+    writeInFlight = true;
+    try {
+        let command;
+        while ((command = nextPayload()) !== null) {
+            if (!rxCharacteristic) break;
+
+            try {
+                await writeCharacteristic(new TextEncoder().encode(command + "\n"));
+            } catch (error) {
+                /* Leave lastSentMotion alone so the next tick retries. A failed
+                   stop is the dangerous one, and it will be retried in ~100ms. */
+                log("ERRO ao enviar " + command + ": " + describe(error));
+                setStatus("Erro ao enviar — veja o log", true);
+                break;
+            }
+
+            if (command === "S" || command.charCodeAt(0) === 77 /* M */) {
+                lastSentMotion = command;
+                lastMotionAt = performance.now();
+            }
+
+            report(command);
+        }
+    } finally {
+        writeInFlight = false;
+    }
+}
+
+/* The heartbeat and any retry after a failed write. Cheap when idle: the pump
+   returns immediately once there is nothing left to send. */
+setInterval(() => { if (rxCharacteristic) pump(); }, 100);
+
+function report(command) {
+    if (command === lastReported) return;   // don't log every heartbeat
+    lastReported = command;
+
+    log("enviado: " + command);
+    if (statusLock) return;
+
+    if (command === "S") {
+        setStatus("Parado");
+    } else if (command.charCodeAt(0) === 77 /* M */) {
+        const [, left, right] = command.split(",");
+        setStatus("Motores  E " + left + "  D " + right);
+    } else {
+        setStatus(UNHANDLED.has(command)
+            ? command + " enviado (o micro:bit ignora este comando)"
+            : "→ " + command);
+    }
+}
+
+/* Write-without-response is faster but is rejected with NotSupportedError when
+   the characteristic does not declare that property, so it is only attempted
+   when the properties say so, and it still falls back to an acknowledged write. */
+async function writeCharacteristic(payload) {
+    const properties = rxCharacteristic.properties || {};
+
+    if (properties.writeWithoutResponse && rxCharacteristic.writeValueWithoutResponse) {
+        try {
+            await rxCharacteristic.writeValueWithoutResponse(payload);
+            return;
+        } catch (error) {
+            log("writeValueWithoutResponse falhou (" + describe(error) + "), usando writeValue");
+        }
+    }
+
+    await rxCharacteristic.writeValue(payload);
+}
+
+/* --------------------------- Press handling --------------------------- */
+
+const DIRECTIONS = new Set(["UP", "DOWN", "LEFT", "RIGHT"]);
+const held = new Set();   // direction buttons currently down
+
+const speedInput = document.getElementById("speed");
+const speedValue = document.getElementById("speed-value");
+
+speedInput.addEventListener("input", () => {
+    speedValue.textContent = speedInput.value;
+    setMotion(motionFor(held));   // take effect mid-drive
+});
+
+function buzz(ms) {
+    try { if (navigator.vibrate) navigator.vibrate(ms); } catch (error) { /* ignore */ }
+}
+
+/* Tank mixing: forward/back sets both wheels, left/right biases them. Pressing
+   a side on its own spins the car in place, which is what the old LEFT/RIGHT
+   commands did; pressing it together with UP or DOWN gives a real curve. */
+function motionFor(directions) {
+    const forward = (directions.has("UP") ? 1 : 0) - (directions.has("DOWN") ? 1 : 0);
+    const side    = (directions.has("RIGHT") ? 1 : 0) - (directions.has("LEFT") ? 1 : 0);
+
+    if (!forward && !side) return "S";
+
+    const speed = Number(speedInput.value);
+    let left, right;
+
+    if (!forward) {
+        left  =  side * speed * SPIN_RATIO;
+        right = -left;
+    } else {
+        const bias = side * speed * TURN_RATIO;
+        left  = forward * speed + bias;
+        right = forward * speed - bias;
+
+        /* Scale both wheels down together rather than clipping one of them,
+           so the curve keeps its shape at full speed. */
+        const peak = Math.max(Math.abs(left), Math.abs(right));
+        if (peak > 100) {
+            left  = left  * 100 / peak;
+            right = right * 100 / peak;
+        }
+    }
+
+    return "M," + Math.round(left) + "," + Math.round(right);
+}
+
+function press(command) {
+    if (!DIRECTIONS.has(command)) {
+        sendAction(command);
+        buzz(12);
+        flash(command);
+        return;
+    }
+
+    if (held.has(command)) return;
+    held.add(command);
+    buzz(12);
+
+    const button = document.querySelector('[data-command="' + command + '"]');
+    if (button) button.classList.add("active");
+
+    setMotion(motionFor(held));
+}
+
+function release(command) {
+    if (!held.has(command)) return;
+    held.delete(command);
+
+    const button = document.querySelector('[data-command="' + command + '"]');
+    if (button) button.classList.remove("active");
+
+    setMotion(motionFor(held));
+}
+
+/* Action buttons have no held state, so their press just blinks. */
+function flash(command) {
+    const button = document.querySelector('[data-command="' + command + '"]');
+    if (!button) return;
+    button.classList.add("active");
+    setTimeout(() => button.classList.remove("active"), 120);
+}
+
+function releaseAll() {
+    Array.from(held).forEach(release);
+}
+
+/* Forget every held button without sending anything (used when the link is
+   already gone). The micro:bit's own watchdog stops the car in that case. */
+function clearHeld() {
+    held.forEach(command => {
+        const button = document.querySelector('[data-command="' + command + '"]');
+        if (button) button.classList.remove("active");
+    });
+    held.clear();
+}
+
+document.querySelectorAll("[data-command]").forEach(button => {
+    const command = button.dataset.command;
+
+    button.addEventListener("pointerdown", event => {
+        event.preventDefault();
+        button.setPointerCapture(event.pointerId);   // keep the press if the finger slides
+        press(command);
+    });
+
+    ["pointerup", "pointercancel"].forEach(type =>
+        button.addEventListener(type, () => release(command))
+    );
+
+    button.addEventListener("contextmenu", event => event.preventDefault());
+});
+
+/* Losing focus or visibility must not leave a button stuck down. */
+window.addEventListener("blur", releaseAll);
+document.addEventListener("visibilitychange", () => {
+    if (document.hidden) releaseAll();
+});
+
+/* ------------------------------ Keyboard ------------------------------ */
+
+const KEY_MAP = {
+    arrowup: "UP",    w: "UP",
+    arrowdown: "DOWN", s: "DOWN",
+    arrowleft: "LEFT", a: "LEFT",
+    arrowright: "RIGHT", d: "RIGHT",
+    /* A B C D sit on the home row: the letter keys are taken by WASD. */
+    j: "A", k: "B", l: "C", ";": "D"
+};
+
+window.addEventListener("keydown", event => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+    const command = KEY_MAP[event.key.toLowerCase()];
+    if (!command) return;
+
+    event.preventDefault();
+    if (!event.repeat) press(command);   // our own interval does the repeating
+});
+
+window.addEventListener("keyup", event => {
+    const command = KEY_MAP[event.key.toLowerCase()];
+    if (command) release(command);
+});
+
+/* ------------------------------- Startup ------------------------------- */
+
+log("origem: " + location.origin + "  contexto seguro: " + window.isSecureContext);
+
+const startupProblem = unsupportedReason();
+if (startupProblem) {
+    setStatus(startupProblem, true);
+    log("ERRO: " + startupProblem);
+}
+</script>
+</body>
+</html>
