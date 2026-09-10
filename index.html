@@ -357,6 +357,10 @@
 <script>
 "use strict";
 
+/* ==================================================================
+   1. Constantes globais
+   ================================================================== */
+
 /* ------------------------------------------------------------------
    Nordic UART Service, as exposed by MakeCode's bluetooth.startUartService().
    The micro:bit reads with uartReadUntil("\n"), so each command needs an LF.
@@ -383,6 +387,7 @@ const UART_TX      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // notify: micro:bi
    moving so the micro:bit's watchdog can stop the car if the link dies. */
 
 const HEARTBEAT_MS = 350;   // must stay well under the micro:bit's watchdog
+const PUMP_MS      = 100;   // heartbeat tick and retry after a failed write
 const TURN_RATIO   = 0.7;   // how much a sideways press biases the wheels
 const SPIN_RATIO   = 0.75;  // speed used when turning in place
 
@@ -392,432 +397,7 @@ const UNHANDLED = new Set(["D"]);
 const IDLE_GLYPH = "ᛒ";
 const LIVE_GLYPH = "✓";
 
-let device = null;
-let rxCharacteristic = null;
-let writeInFlight = false;   // one GATT write at a time, or it throws
-let statusLock = false;      // don't overwrite the "connecting..." message
-
-const bluetoothButton = document.getElementById("bluetooth");
-const bluetoothLabel  = document.getElementById("bluetooth-label");
-const statusEl        = document.getElementById("status");
-
-function setStatus(text, isError) {
-    statusEl.textContent = text;
-    statusEl.classList.toggle("error", Boolean(isError));
-}
-
-/* -------------------------------- Log --------------------------------
-   Errors here are easy to miss in the small status line, so every send
-   and every failure is also written to a panel toggled by the ? button. */
-
-const logEl = document.getElementById("log");
-const logLines = [];
-
-function log(line) {
-    const stamp = new Date().toLocaleTimeString("pt-BR", { hour12: false });
-    logLines.push(stamp + "  " + line);
-    if (logLines.length > 80) logLines.shift();
-    logEl.textContent = logLines.join("\n");
-    logEl.scrollTop = logEl.scrollHeight;
-    console.log("[car] " + line);
-}
-
-function describe(error) {
-    if (!error) return "erro desconhecido";
-    return (error.name || "Error") + ": " + (error.message || String(error));
-}
-
-document.getElementById("log-toggle").addEventListener("click", () => {
-    document.body.classList.toggle("show-log");
-});
-
-/* ----------------------------- Connection ----------------------------- */
-
-function unsupportedReason() {
-    if (!window.isSecureContext) {
-        return "Abra a página em HTTPS ou localhost para usar Bluetooth.";
-    }
-    if (!navigator.bluetooth) {
-        return "Este navegador não suporta Web Bluetooth. Use Chrome, Edge ou Opera.";
-    }
-    return null;
-}
-
-async function connect() {
-    const reason = unsupportedReason();
-    if (reason) {
-        setStatus(reason, true);
-        return;
-    }
-
-    try {
-        setStatus("Escolha o seu micro:bit na lista...");
-
-        /* The micro:bit does not advertise the UART service in its
-           advertisement packet, so filtering only by service finds nothing.
-           Filter by name and request UART as an optional service. */
-        device = await navigator.bluetooth.requestDevice({
-            filters: [
-                { namePrefix: "BBC micro:bit" },
-                { namePrefix: "micro:bit" },
-                { services: [UART_SERVICE] }
-            ],
-            optionalServices: [UART_SERVICE]
-        });
-
-        device.addEventListener("gattserverdisconnected", onDisconnected);
-
-        bluetoothButton.classList.add("busy");
-        setStatus("Conectando...");
-        statusLock = true;
-
-        log("dispositivo: " + (device.name || "(sem nome)"));
-
-        const server  = await device.gatt.connect();
-        const service = await server.getPrimaryService(UART_SERVICE);
-        rxCharacteristic = await service.getCharacteristic(UART_RX);
-
-        const props = rxCharacteristic.properties || {};
-        log("características de escrita: write=" + Boolean(props.write) +
-            " writeWithoutResponse=" + Boolean(props.writeWithoutResponse));
-
-        /* The micro:bit's RX characteristic always advertises write. If it does
-           not, we are talking to the wrong characteristic, so dump the whole
-           service instead of failing silently on the first button press. */
-        if (!props.write && !props.writeWithoutResponse) {
-            await describeService(service);
-            log("PROBLEMA: a característica " + UART_RX + " não aceita escrita.");
-            statusLock = false;
-            reset();
-            setStatus("Serviço UART inacessível — veja o log", true);
-            document.body.classList.add("show-log");
-            return;
-        }
-
-        /* Listening to the notify characteristic is not needed to drive the
-           car, but anything arriving here proves the link really works. */
-        try {
-            const tx = await service.getCharacteristic(UART_TX);
-            await tx.startNotifications();
-            tx.addEventListener("characteristicvaluechanged", event => {
-                log("micro:bit disse: " + new TextDecoder().decode(event.target.value));
-            });
-            log("notificações ativas");
-        } catch (error) {
-            log("sem notificações (" + describe(error) + ") — não impede o controle");
-        }
-
-        statusLock = false;
-        bluetoothButton.classList.remove("busy");
-        bluetoothButton.classList.add("connected");
-        bluetoothLabel.textContent = LIVE_GLYPH;
-        /* The pump opens with an "S" so the car is known to be stopped; keep
-           that off the status line so the connection message survives. */
-        lastReported = "S";
-        setStatus("Conectado a " + (device.name || "micro:bit"));
-        log("conectado");
-    } catch (error) {
-        statusLock = false;
-        reset();
-
-        if (error && error.name === "NotFoundError") {
-            setStatus("Nenhum micro:bit escolhido.");
-            log("seleção cancelada");
-        } else {
-            log("ERRO ao conectar: " + describe(error));
-            setStatus("Falha ao conectar — veja o log", true);
-        }
-    }
-}
-
-/* Dumps every characteristic the browser thinks the UART service has, which
-   is what distinguishes a stale cache from a genuinely different service. */
-async function describeService(service) {
-    try {
-        const characteristics = await service.getCharacteristics();
-        log("características encontradas no serviço UART: " + characteristics.length);
-        characteristics.forEach(characteristic => {
-            const p = characteristic.properties || {};
-            const flags = Object.keys(p).filter(key => p[key]);
-            log("  " + characteristic.uuid + " → " +
-                (flags.length ? flags.join(", ") : "(nenhuma propriedade)"));
-        });
-    } catch (error) {
-        log("não foi possível listar as características: " + describe(error));
-    }
-}
-
-function onDisconnected() {
-    reset();
-    setStatus("Bluetooth desconectado");
-}
-
-function reset() {
-    rxCharacteristic = null;
-    writeInFlight = false;
-    clearHeld();             // silently: there is no link left to send "S" over
-    actionQueue.length = 0;
-    desiredMotion = "S";
-    lastSentMotion = null;   // the next connection must resend the state
-    lastReported = "";
-    bluetoothButton.classList.remove("connected", "busy");
-    bluetoothLabel.textContent = IDLE_GLYPH;
-}
-
-bluetoothButton.addEventListener("click", async () => {
-    if (device && device.gatt && device.gatt.connected) {
-        /* Stop the wheels before dropping the link, instead of leaving the car
-           rolling until its watchdog fires. */
-        releaseAll();
-        await new Promise(resolve => setTimeout(resolve, 150));   // let "S" go out
-        device.gatt.disconnect();   // fires gattserverdisconnected
-    } else {
-        connect();
-    }
-});
-
-/* ------------------------------- Sending ------------------------------- */
-
-/* Only one GATT write may be in flight, and a press can change the wanted
-   speed faster than the radio can carry it. So instead of a queue of motion
-   commands — which would keep the car driving after the button came up — the
-   pump keeps a single *desired* state and always sends the newest one. One-shot
-   actions (A/B/C) are different: every one of them has to arrive, so they get a
-   real queue and jump ahead of motion. */
-
-let desiredMotion  = "S";   // the state the car should be in right now
-let lastSentMotion = null;  // the state we last managed to put on the wire
-let lastMotionAt   = 0;
-let lastReported   = "";
-const actionQueue  = [];
-
-function setMotion(command) {
-    desiredMotion = command;
-    pump();
-}
-
-function sendAction(command) {
-    actionQueue.push(command);
-    pump();
-}
-
-/* What, if anything, still needs to go out. */
-function nextPayload() {
-    if (actionQueue.length) return actionQueue.shift();
-
-    if (desiredMotion !== lastSentMotion) return desiredMotion;
-
-    /* Moving: keep the watchdog fed. Stopped: nothing to say. */
-    if (desiredMotion !== "S" && performance.now() - lastMotionAt >= HEARTBEAT_MS) {
-        return desiredMotion;
-    }
-
-    return null;
-}
-
-async function pump() {
-    if (writeInFlight) return;   // the running pump will pick up the new state
-
-    if (!rxCharacteristic) {
-        if (desiredMotion !== "S" || actionQueue.length) {
-            actionQueue.length = 0;
-            desiredMotion = "S";
-            setStatus("Conecte o micro:bit primeiro.", true);
-        }
-        return;
-    }
-
-    writeInFlight = true;
-    try {
-        let command;
-        while ((command = nextPayload()) !== null) {
-            if (!rxCharacteristic) break;
-
-            try {
-                await writeCharacteristic(new TextEncoder().encode(command + "\n"));
-            } catch (error) {
-                /* Leave lastSentMotion alone so the next tick retries. A failed
-                   stop is the dangerous one, and it will be retried in ~100ms. */
-                log("ERRO ao enviar " + command + ": " + describe(error));
-                setStatus("Erro ao enviar — veja o log", true);
-                break;
-            }
-
-            if (command === "S" || command.charCodeAt(0) === 77 /* M */) {
-                lastSentMotion = command;
-                lastMotionAt = performance.now();
-            }
-
-            report(command);
-        }
-    } finally {
-        writeInFlight = false;
-    }
-}
-
-/* The heartbeat and any retry after a failed write. Cheap when idle: the pump
-   returns immediately once there is nothing left to send. */
-setInterval(() => { if (rxCharacteristic) pump(); }, 100);
-
-function report(command) {
-    if (command === lastReported) return;   // don't log every heartbeat
-    lastReported = command;
-
-    log("enviado: " + command);
-    if (statusLock) return;
-
-    if (command === "S") {
-        setStatus("Parado");
-    } else if (command.charCodeAt(0) === 77 /* M */) {
-        const [, left, right] = command.split(",");
-        setStatus("Motores  E " + left + "  D " + right);
-    } else {
-        setStatus(UNHANDLED.has(command)
-            ? command + " enviado (o micro:bit ignora este comando)"
-            : "→ " + command);
-    }
-}
-
-/* Write-without-response is faster but is rejected with NotSupportedError when
-   the characteristic does not declare that property, so it is only attempted
-   when the properties say so, and it still falls back to an acknowledged write. */
-async function writeCharacteristic(payload) {
-    const properties = rxCharacteristic.properties || {};
-
-    if (properties.writeWithoutResponse && rxCharacteristic.writeValueWithoutResponse) {
-        try {
-            await rxCharacteristic.writeValueWithoutResponse(payload);
-            return;
-        } catch (error) {
-            log("writeValueWithoutResponse falhou (" + describe(error) + "), usando writeValue");
-        }
-    }
-
-    await rxCharacteristic.writeValue(payload);
-}
-
-/* --------------------------- Press handling --------------------------- */
-
 const DIRECTIONS = new Set(["UP", "DOWN", "LEFT", "RIGHT"]);
-const held = new Set();   // direction buttons currently down
-
-const speedInput = document.getElementById("speed");
-const speedValue = document.getElementById("speed-value");
-
-speedInput.addEventListener("input", () => {
-    speedValue.textContent = speedInput.value;
-    setMotion(motionFor(held));   // take effect mid-drive
-});
-
-function buzz(ms) {
-    try { if (navigator.vibrate) navigator.vibrate(ms); } catch (error) { /* ignore */ }
-}
-
-/* Tank mixing: forward/back sets both wheels, left/right biases them. Pressing
-   a side on its own spins the car in place, which is what the old LEFT/RIGHT
-   commands did; pressing it together with UP or DOWN gives a real curve. */
-function motionFor(directions) {
-    const forward = (directions.has("UP") ? 1 : 0) - (directions.has("DOWN") ? 1 : 0);
-    const side    = (directions.has("RIGHT") ? 1 : 0) - (directions.has("LEFT") ? 1 : 0);
-
-    if (!forward && !side) return "S";
-
-    const speed = Number(speedInput.value);
-    let left, right;
-
-    if (!forward) {
-        left  =  side * speed * SPIN_RATIO;
-        right = -left;
-    } else {
-        const bias = side * speed * TURN_RATIO;
-        left  = forward * speed + bias;
-        right = forward * speed - bias;
-
-        /* Scale both wheels down together rather than clipping one of them,
-           so the curve keeps its shape at full speed. */
-        const peak = Math.max(Math.abs(left), Math.abs(right));
-        if (peak > 100) {
-            left  = left  * 100 / peak;
-            right = right * 100 / peak;
-        }
-    }
-
-    return "M," + Math.round(left) + "," + Math.round(right);
-}
-
-function press(command) {
-    if (!DIRECTIONS.has(command)) {
-        sendAction(command);
-        buzz(12);
-        flash(command);
-        return;
-    }
-
-    if (held.has(command)) return;
-    held.add(command);
-    buzz(12);
-
-    const button = document.querySelector('[data-command="' + command + '"]');
-    if (button) button.classList.add("active");
-
-    setMotion(motionFor(held));
-}
-
-function release(command) {
-    if (!held.has(command)) return;
-    held.delete(command);
-
-    const button = document.querySelector('[data-command="' + command + '"]');
-    if (button) button.classList.remove("active");
-
-    setMotion(motionFor(held));
-}
-
-/* Action buttons have no held state, so their press just blinks. */
-function flash(command) {
-    const button = document.querySelector('[data-command="' + command + '"]');
-    if (!button) return;
-    button.classList.add("active");
-    setTimeout(() => button.classList.remove("active"), 120);
-}
-
-function releaseAll() {
-    Array.from(held).forEach(release);
-}
-
-/* Forget every held button without sending anything (used when the link is
-   already gone). The micro:bit's own watchdog stops the car in that case. */
-function clearHeld() {
-    held.forEach(command => {
-        const button = document.querySelector('[data-command="' + command + '"]');
-        if (button) button.classList.remove("active");
-    });
-    held.clear();
-}
-
-document.querySelectorAll("[data-command]").forEach(button => {
-    const command = button.dataset.command;
-
-    button.addEventListener("pointerdown", event => {
-        event.preventDefault();
-        button.setPointerCapture(event.pointerId);   // keep the press if the finger slides
-        press(command);
-    });
-
-    ["pointerup", "pointercancel"].forEach(type =>
-        button.addEventListener(type, () => release(command))
-    );
-
-    button.addEventListener("contextmenu", event => event.preventDefault());
-});
-
-/* Losing focus or visibility must not leave a button stuck down. */
-window.addEventListener("blur", releaseAll);
-document.addEventListener("visibilitychange", () => {
-    if (document.hidden) releaseAll();
-});
-
-/* ------------------------------ Keyboard ------------------------------ */
 
 const KEY_MAP = {
     arrowup: "UP",    w: "UP",
@@ -828,30 +408,507 @@ const KEY_MAP = {
     j: "A", k: "B", l: "C", ";": "D"
 };
 
-window.addEventListener("keydown", event => {
-    if (event.metaKey || event.ctrlKey || event.altKey) return;
+const LOG_LIMIT = 80;   // lines kept in the diagnostic panel
 
-    const command = KEY_MAP[event.key.toLowerCase()];
-    if (!command) return;
+/* ==================================================================
+   2. Classes
+   ================================================================== */
 
-    event.preventDefault();
-    if (!event.repeat) press(command);   // our own interval does the repeating
-});
+/* -------------------------------- Log --------------------------------
+   Errors here are easy to miss in the small status line, so every send
+   and every failure is also written to a panel toggled by the ? button. */
 
-window.addEventListener("keyup", event => {
-    const command = KEY_MAP[event.key.toLowerCase()];
-    if (command) release(command);
-});
+class Logger {
+    constructor(element) {
+        this.element = element;
+        this.lines = [];
+    }
 
-/* ------------------------------- Startup ------------------------------- */
+    write(line) {
+        const stamp = new Date().toLocaleTimeString("pt-BR", { hour12: false });
+        this.lines.push(stamp + "  " + line);
+        if (this.lines.length > LOG_LIMIT) this.lines.shift();
+        this.element.textContent = this.lines.join("\n");
+        this.element.scrollTop = this.element.scrollHeight;
+        console.log("[car] " + line);
+    }
 
-log("origem: " + location.origin + "  contexto seguro: " + window.isSecureContext);
-
-const startupProblem = unsupportedReason();
-if (startupProblem) {
-    setStatus(startupProblem, true);
-    log("ERRO: " + startupProblem);
+    static describe(error) {
+        if (!error) return "erro desconhecido";
+        return (error.name || "Error") + ": " + (error.message || String(error));
+    }
 }
+
+class CarController {
+    constructor() {
+        /* ---- DOM ---- */
+        this.bluetoothButton = document.getElementById("bluetooth");
+        this.bluetoothLabel  = document.getElementById("bluetooth-label");
+        this.statusEl        = document.getElementById("status");
+        this.logToggle       = document.getElementById("log-toggle");
+        this.speedInput      = document.getElementById("speed");
+        this.speedValue      = document.getElementById("speed-value");
+        this.logger          = new Logger(document.getElementById("log"));
+
+        /* ---- Bluetooth ---- */
+        this.device = null;
+        this.rxCharacteristic = null;
+        this.writeInFlight = false;   // one GATT write at a time, or it throws
+        this.statusLock = false;      // don't overwrite the "connecting..." message
+
+        /* ---- Estado de envio ----
+           Only one GATT write may be in flight, and a press can change the wanted
+           speed faster than the radio can carry it. So instead of a queue of motion
+           commands — which would keep the car driving after the button came up — the
+           pump keeps a single *desired* state and always sends the newest one. One-shot
+           actions (A/B/C) are different: every one of them has to arrive, so they get a
+           real queue and jump ahead of motion. */
+        this.desiredMotion  = "S";   // the state the car should be in right now
+        this.lastSentMotion = null;  // the state we last managed to put on the wire
+        this.lastMotionAt   = 0;
+        this.lastReported   = "";
+        this.actionQueue    = [];
+
+        /* ---- Botões pressionados ---- */
+        this.held = new Set();   // direction buttons currently down
+    }
+
+    /* ------------------------------ Startup ------------------------------ */
+
+    init() {
+        this.bindControls();
+        this.bindKeyboard();
+        this.bindWindow();
+
+        /* The heartbeat and any retry after a failed write. Cheap when idle: the pump
+           returns immediately once there is nothing left to send. */
+        setInterval(() => { if (this.rxCharacteristic) this.pump(); }, PUMP_MS);
+
+        this.log("origem: " + location.origin + "  contexto seguro: " + window.isSecureContext);
+
+        const startupProblem = CarController.unsupportedReason();
+        if (startupProblem) {
+            this.setStatus(startupProblem, true);
+            this.log("ERRO: " + startupProblem);
+        }
+    }
+
+    /* ------------------------------ Bindings ------------------------------ */
+
+    bindControls() {
+        this.logToggle.addEventListener("click", () => {
+            document.body.classList.toggle("show-log");
+        });
+
+        this.bluetoothButton.addEventListener("click", () => this.toggleConnection());
+
+        this.speedInput.addEventListener("input", () => {
+            this.speedValue.textContent = this.speedInput.value;
+            this.setMotion(this.motionFor(this.held));   // take effect mid-drive
+        });
+
+        document.querySelectorAll("[data-command]").forEach(button => {
+            const command = button.dataset.command;
+
+            button.addEventListener("pointerdown", event => {
+                event.preventDefault();
+                button.setPointerCapture(event.pointerId);   // keep the press if the finger slides
+                this.press(command);
+            });
+
+            ["pointerup", "pointercancel"].forEach(type =>
+                button.addEventListener(type, () => this.release(command))
+            );
+
+            button.addEventListener("contextmenu", event => event.preventDefault());
+        });
+    }
+
+    bindKeyboard() {
+        window.addEventListener("keydown", event => {
+            if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+            const command = KEY_MAP[event.key.toLowerCase()];
+            if (!command) return;
+
+            event.preventDefault();
+            if (!event.repeat) this.press(command);   // our own interval does the repeating
+        });
+
+        window.addEventListener("keyup", event => {
+            const command = KEY_MAP[event.key.toLowerCase()];
+            if (command) this.release(command);
+        });
+    }
+
+    bindWindow() {
+        /* Losing focus or visibility must not leave a button stuck down. */
+        window.addEventListener("blur", () => this.releaseAll());
+        document.addEventListener("visibilitychange", () => {
+            if (document.hidden) this.releaseAll();
+        });
+    }
+
+    /* ------------------------------- Status ------------------------------- */
+
+    setStatus(text, isError) {
+        this.statusEl.textContent = text;
+        this.statusEl.classList.toggle("error", Boolean(isError));
+    }
+
+    log(line) {
+        this.logger.write(line);
+    }
+
+    /* ----------------------------- Connection ----------------------------- */
+
+    static unsupportedReason() {
+        if (!window.isSecureContext) {
+            return "Abra a página em HTTPS ou localhost para usar Bluetooth.";
+        }
+        if (!navigator.bluetooth) {
+            return "Este navegador não suporta Web Bluetooth. Use Chrome, Edge ou Opera.";
+        }
+        return null;
+    }
+
+    async toggleConnection() {
+        if (this.device && this.device.gatt && this.device.gatt.connected) {
+            /* Stop the wheels before dropping the link, instead of leaving the car
+               rolling until its watchdog fires. */
+            this.releaseAll();
+            await new Promise(resolve => setTimeout(resolve, 150));   // let "S" go out
+            this.device.gatt.disconnect();   // fires gattserverdisconnected
+        } else {
+            this.connect();
+        }
+    }
+
+    async connect() {
+        const reason = CarController.unsupportedReason();
+        if (reason) {
+            this.setStatus(reason, true);
+            return;
+        }
+
+        try {
+            this.setStatus("Escolha o seu micro:bit na lista...");
+
+            /* The micro:bit does not advertise the UART service in its
+               advertisement packet, so filtering only by service finds nothing.
+               Filter by name and request UART as an optional service. */
+            this.device = await navigator.bluetooth.requestDevice({
+                filters: [
+                    { namePrefix: "BBC micro:bit" },
+                    { namePrefix: "micro:bit" },
+                    { services: [UART_SERVICE] }
+                ],
+                optionalServices: [UART_SERVICE]
+            });
+
+            this.device.addEventListener("gattserverdisconnected", () => this.onDisconnected());
+
+            this.bluetoothButton.classList.add("busy");
+            this.setStatus("Conectando...");
+            this.statusLock = true;
+
+            this.log("dispositivo: " + (this.device.name || "(sem nome)"));
+
+            const server  = await this.device.gatt.connect();
+            const service = await server.getPrimaryService(UART_SERVICE);
+            this.rxCharacteristic = await service.getCharacteristic(UART_RX);
+
+            const props = this.rxCharacteristic.properties || {};
+            this.log("características de escrita: write=" + Boolean(props.write) +
+                " writeWithoutResponse=" + Boolean(props.writeWithoutResponse));
+
+            /* The micro:bit's RX characteristic always advertises write. If it does
+               not, we are talking to the wrong characteristic, so dump the whole
+               service instead of failing silently on the first button press. */
+            if (!props.write && !props.writeWithoutResponse) {
+                await this.describeService(service);
+                this.log("PROBLEMA: a característica " + UART_RX + " não aceita escrita.");
+                this.statusLock = false;
+                this.reset();
+                this.setStatus("Serviço UART inacessível — veja o log", true);
+                document.body.classList.add("show-log");
+                return;
+            }
+
+            await this.subscribeNotifications(service);
+
+            this.statusLock = false;
+            this.bluetoothButton.classList.remove("busy");
+            this.bluetoothButton.classList.add("connected");
+            this.bluetoothLabel.textContent = LIVE_GLYPH;
+            /* The pump opens with an "S" so the car is known to be stopped; keep
+               that off the status line so the connection message survives. */
+            this.lastReported = "S";
+            this.setStatus("Conectado a " + (this.device.name || "micro:bit"));
+            this.log("conectado");
+        } catch (error) {
+            this.statusLock = false;
+            this.reset();
+
+            if (error && error.name === "NotFoundError") {
+                this.setStatus("Nenhum micro:bit escolhido.");
+                this.log("seleção cancelada");
+            } else {
+                this.log("ERRO ao conectar: " + Logger.describe(error));
+                this.setStatus("Falha ao conectar — veja o log", true);
+            }
+        }
+    }
+
+    /* Listening to the notify characteristic is not needed to drive the
+       car, but anything arriving here proves the link really works. */
+    async subscribeNotifications(service) {
+        try {
+            const tx = await service.getCharacteristic(UART_TX);
+            await tx.startNotifications();
+            tx.addEventListener("characteristicvaluechanged", event => {
+                this.log("micro:bit disse: " + new TextDecoder().decode(event.target.value));
+            });
+            this.log("notificações ativas");
+        } catch (error) {
+            this.log("sem notificações (" + Logger.describe(error) + ") — não impede o controle");
+        }
+    }
+
+    /* Dumps every characteristic the browser thinks the UART service has, which
+       is what distinguishes a stale cache from a genuinely different service. */
+    async describeService(service) {
+        try {
+            const characteristics = await service.getCharacteristics();
+            this.log("características encontradas no serviço UART: " + characteristics.length);
+            characteristics.forEach(characteristic => {
+                const p = characteristic.properties || {};
+                const flags = Object.keys(p).filter(key => p[key]);
+                this.log("  " + characteristic.uuid + " → " +
+                    (flags.length ? flags.join(", ") : "(nenhuma propriedade)"));
+            });
+        } catch (error) {
+            this.log("não foi possível listar as características: " + Logger.describe(error));
+        }
+    }
+
+    onDisconnected() {
+        this.reset();
+        this.setStatus("Bluetooth desconectado");
+    }
+
+    reset() {
+        this.rxCharacteristic = null;
+        this.writeInFlight = false;
+        this.clearHeld();               // silently: there is no link left to send "S" over
+        this.actionQueue.length = 0;
+        this.desiredMotion = "S";
+        this.lastSentMotion = null;     // the next connection must resend the state
+        this.lastReported = "";
+        this.bluetoothButton.classList.remove("connected", "busy");
+        this.bluetoothLabel.textContent = IDLE_GLYPH;
+    }
+
+    /* ------------------------------- Sending ------------------------------- */
+
+    setMotion(command) {
+        this.desiredMotion = command;
+        this.pump();
+    }
+
+    sendAction(command) {
+        this.actionQueue.push(command);
+        this.pump();
+    }
+
+    /* What, if anything, still needs to go out. */
+    nextPayload() {
+        if (this.actionQueue.length) return this.actionQueue.shift();
+
+        if (this.desiredMotion !== this.lastSentMotion) return this.desiredMotion;
+
+        /* Moving: keep the watchdog fed. Stopped: nothing to say. */
+        if (this.desiredMotion !== "S" && performance.now() - this.lastMotionAt >= HEARTBEAT_MS) {
+            return this.desiredMotion;
+        }
+
+        return null;
+    }
+
+    async pump() {
+        if (this.writeInFlight) return;   // the running pump will pick up the new state
+
+        if (!this.rxCharacteristic) {
+            if (this.desiredMotion !== "S" || this.actionQueue.length) {
+                this.actionQueue.length = 0;
+                this.desiredMotion = "S";
+                this.setStatus("Conecte o micro:bit primeiro.", true);
+            }
+            return;
+        }
+
+        this.writeInFlight = true;
+        try {
+            let command;
+            while ((command = this.nextPayload()) !== null) {
+                if (!this.rxCharacteristic) break;
+
+                try {
+                    await this.writeCharacteristic(new TextEncoder().encode(command + "\n"));
+                } catch (error) {
+                    /* Leave lastSentMotion alone so the next tick retries. A failed
+                       stop is the dangerous one, and it will be retried in ~100ms. */
+                    this.log("ERRO ao enviar " + command + ": " + Logger.describe(error));
+                    this.setStatus("Erro ao enviar — veja o log", true);
+                    break;
+                }
+
+                if (command === "S" || command.charCodeAt(0) === 77 /* M */) {
+                    this.lastSentMotion = command;
+                    this.lastMotionAt = performance.now();
+                }
+
+                this.report(command);
+            }
+        } finally {
+            this.writeInFlight = false;
+        }
+    }
+
+    /* Write-without-response is faster but is rejected with NotSupportedError when
+       the characteristic does not declare that property, so it is only attempted
+       when the properties say so, and it still falls back to an acknowledged write. */
+    async writeCharacteristic(payload) {
+        const properties = this.rxCharacteristic.properties || {};
+
+        if (properties.writeWithoutResponse && this.rxCharacteristic.writeValueWithoutResponse) {
+            try {
+                await this.rxCharacteristic.writeValueWithoutResponse(payload);
+                return;
+            } catch (error) {
+                this.log("writeValueWithoutResponse falhou (" + Logger.describe(error) + "), usando writeValue");
+            }
+        }
+
+        await this.rxCharacteristic.writeValue(payload);
+    }
+
+    report(command) {
+        if (command === this.lastReported) return;   // don't log every heartbeat
+        this.lastReported = command;
+
+        this.log("enviado: " + command);
+        if (this.statusLock) return;
+
+        if (command === "S") {
+            this.setStatus("Parado");
+        } else if (command.charCodeAt(0) === 77 /* M */) {
+            const [, left, right] = command.split(",");
+            this.setStatus("Motores  E " + left + "  D " + right);
+        } else {
+            this.setStatus(UNHANDLED.has(command)
+                ? command + " enviado (o micro:bit ignora este comando)"
+                : "→ " + command);
+        }
+    }
+
+    /* --------------------------- Press handling --------------------------- */
+
+    /* Tank mixing: forward/back sets both wheels, left/right biases them. Pressing
+       a side on its own spins the car in place, which is what the old LEFT/RIGHT
+       commands did; pressing it together with UP or DOWN gives a real curve. */
+    motionFor(directions) {
+        const forward = (directions.has("UP") ? 1 : 0) - (directions.has("DOWN") ? 1 : 0);
+        const side    = (directions.has("RIGHT") ? 1 : 0) - (directions.has("LEFT") ? 1 : 0);
+
+        if (!forward && !side) return "S";
+
+        const speed = Number(this.speedInput.value);
+        let left, right;
+
+        if (!forward) {
+            left  =  side * speed * SPIN_RATIO;
+            right = -left;
+        } else {
+            const bias = side * speed * TURN_RATIO;
+            left  = forward * speed + bias;
+            right = forward * speed - bias;
+
+            /* Scale both wheels down together rather than clipping one of them,
+               so the curve keeps its shape at full speed. */
+            const peak = Math.max(Math.abs(left), Math.abs(right));
+            if (peak > 100) {
+                left  = left  * 100 / peak;
+                right = right * 100 / peak;
+            }
+        }
+
+        return "M," + Math.round(left) + "," + Math.round(right);
+    }
+
+    press(command) {
+        if (!DIRECTIONS.has(command)) {
+            this.sendAction(command);
+            CarController.buzz(12);
+            this.flash(command);
+            return;
+        }
+
+        if (this.held.has(command)) return;
+        this.held.add(command);
+        CarController.buzz(12);
+
+        this.setButtonActive(command, true);
+        this.setMotion(this.motionFor(this.held));
+    }
+
+    release(command) {
+        if (!this.held.has(command)) return;
+        this.held.delete(command);
+
+        this.setButtonActive(command, false);
+        this.setMotion(this.motionFor(this.held));
+    }
+
+    releaseAll() {
+        Array.from(this.held).forEach(command => this.release(command));
+    }
+
+    /* Forget every held button without sending anything (used when the link is
+       already gone). The micro:bit's own watchdog stops the car in that case. */
+    clearHeld() {
+        this.held.forEach(command => this.setButtonActive(command, false));
+        this.held.clear();
+    }
+
+    /* Action buttons have no held state, so their press just blinks. */
+    flash(command) {
+        const button = this.buttonFor(command);
+        if (!button) return;
+        button.classList.add("active");
+        setTimeout(() => button.classList.remove("active"), 120);
+    }
+
+    setButtonActive(command, active) {
+        const button = this.buttonFor(command);
+        if (button) button.classList.toggle("active", active);
+    }
+
+    buttonFor(command) {
+        return document.querySelector('[data-command="' + command + '"]');
+    }
+
+    static buzz(ms) {
+        try { if (navigator.vibrate) navigator.vibrate(ms); } catch (error) { /* ignore */ }
+    }
+}
+
+/* ==================================================================
+   3. Instanciação e inicialização
+   ================================================================== */
+
+const controller = new CarController();
+controller.init();
 </script>
 </body>
 </html>
