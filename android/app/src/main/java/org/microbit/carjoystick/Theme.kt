@@ -15,8 +15,8 @@ object Palette {
     val greenDark = Color(0xFF24883F)
     val red = Color(0xFFE74C3C)
 
-    val dpad = Color(0xFF45484F)
-    val dpadActive = Color(0xFF4285F4)
+    /** The circle marking the joystick's full throw. */
+    val stickRing = Color(0xFF5B5F67)
 
     val actionA = Color(0xFFE84393)
     val actionB = Color(0xFFE74C3C)

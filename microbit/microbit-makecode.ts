@@ -1,14 +1,21 @@
 /**
- * micro:bit (Cutebot) program for this project's web controller.
+ * micro:bit (Cutebot) program for this project's web and Android controllers.
  *
  * Paste it into makecode.microbit.org with the editor set to JavaScript
  * (required extensions: "bluetooth" and "cutebot").
 
  * Protocol:
- *   M,<left>,<right>   speeds from -100 to 100, held until the next command
- *   S                  stop
+ *   <DIR>,<SPEED>      analogue joystick position, held until the next command.
+ *                      DIR is N, NE, E, SE, S, SW, W, NW or C (centre), and
+ *                      SPEED is 0..100 — how far the stick is from the centre.
+ *                      "C,0" means the stick is home, so: stop.
  *   A | B | C          actions (LED on/off, horn, LED colour)
  *
+ * A joystick command always carries a comma and an action never does, which is
+ * what tells the centre position "C,0" apart from the colour button "C".
+ *
+ * Mixing the two wheel speeds is this program's job: the controller only says
+ * where the stick is, and every turn below picks the pair of speeds for it.
  */
 
 bluetooth.startUartService()
@@ -18,6 +25,17 @@ const WATCHDOG_MS = 600   // must be longer than the page heartbeat (350 ms)
 
 let lastCommandAt = 0
 let driving = false      // only true after an actual motor command
+
+/* How the eight directions become a pair of wheel speeds. SPEED is the outer
+   wheel; these two say what the other wheel does.
+     TURN_INNER  the inside wheel on a diagonal: still driving forward, just
+                 slower, which is what makes the car sweep a curve.
+     SPIN        due east or west, with no forward or backward component at
+                 all: the wheels turn opposite ways and the car pivots on the
+                 spot. Kept below 100% because a spin needs less speed to read
+                 as deliberate. */
+const TURN_INNER = 35    // % of SPEED given to the inside wheel on a diagonal
+const SPIN = 75          // % of SPEED used by both wheels when spinning in place
 
 /* The horn is a raw PWM square wave, not the "music" extension: that
    extension's audio mixer fights the Bluetooth stack and panics the board.
@@ -56,6 +74,66 @@ function showFace(face: IconNames) {
     faceDirty = true
 }
 
+/**
+ * One branch per stick position. `speed` is how hard the stick is pushed, so
+ * the same direction is gentle near the centre and full tilt at the rim.
+ */
+function drive(direction: string, speed: number) {
+    if (speed < 0) speed = 0
+    if (speed > 100) speed = 100
+
+    const inner = Math.round(speed * TURN_INNER / 100)
+    const spin = Math.round(speed * SPIN / 100)
+
+    let left = 0
+    let right = 0
+
+    if (direction == "N") {
+        // straight ahead: both wheels together
+        left = speed
+        right = speed
+    } else if (direction == "NE") {
+        // forward and curving right: the right wheel is the slow, inside one
+        left = speed
+        right = inner
+    } else if (direction == "E") {
+        // pivot clockwise on the spot
+        left = spin
+        right = -spin
+    } else if (direction == "SE") {
+        // backing up along the same curve as NE, so the car retraces it
+        left = -speed
+        right = -inner
+    } else if (direction == "S") {
+        // straight back
+        left = -speed
+        right = -speed
+    } else if (direction == "SW") {
+        left = -inner
+        right = -speed
+    } else if (direction == "W") {
+        // pivot anticlockwise on the spot
+        left = -spin
+        right = spin
+    } else if (direction == "NW") {
+        // forward and curving left: now the left wheel is the inside one
+        left = inner
+        right = speed
+    } else {
+        // "C", or anything unexpected: the stick is home
+        stopCar()
+        return
+    }
+
+    if (left == 0 && right == 0) {
+        stopCar()
+        return
+    }
+
+    cuteBot.motors(left, right)
+    driving = true
+}
+
 bluetooth.onBluetoothConnected(function () {
     showFace(IconNames.Yes)
 })
@@ -71,15 +149,13 @@ bluetooth.onUartDataReceived("\n", function () {
     const command = bluetooth.uartReadUntil("\n")
     lastCommandAt = input.runningTime()
 
-    if (command.charAt(0) == "M") {
-        // "M,<left>,<right>"
+    if (command.indexOf(",") >= 0) {
+        // "<DIR>,<SPEED>" — must be tested before the single-letter actions,
+        // or "C,0" would be mistaken for the colour button.
         const parts = command.split(",")
-        if (parts.length >= 3) {
-            cuteBot.motors(parseFloat(parts[1]), parseFloat(parts[2]))
-            driving = true
+        if (parts.length >= 2) {
+            drive(parts[0], Math.round(parseFloat(parts[1])))
         }
-    } else if (command == "S") {
-        stopCar()
     } else if (command == "A") {
         ledOn = !ledOn
         applyLights()

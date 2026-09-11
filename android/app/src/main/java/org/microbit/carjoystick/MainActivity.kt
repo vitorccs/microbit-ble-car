@@ -158,8 +158,7 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
 
     val state by controller.state.collectAsStateWithLifecycle()
     val status by controller.status.collectAsStateWithLifecycle()
-    val speed by controller.speed.collectAsStateWithLifecycle()
-    val held by controller.held.collectAsStateWithLifecycle()
+    val stick by controller.stick.collectAsStateWithLifecycle()
     val flashing by controller.flashing.collectAsStateWithLifecycle()
     val logLines by controller.logLines.collectAsStateWithLifecycle()
     val showLog by controller.showLog.collectAsStateWithLifecycle()
@@ -206,12 +205,16 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    DPad(
-                        held = held,
-                        scale = scale,
-                        onPress = { controller.press(it); vibrate(context) },
-                        onRelease = { controller.release(it) },
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy((8 * scale).dp),
+                    ) {
+                        Joystick(
+                            diameter = (176 * scale).dp,
+                            onMove = controller::onStickMoved,
+                        )
+                        StickReadout(stick = stick, scale = scale)
+                    }
 
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -235,8 +238,6 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
                             fontSize = (11 * scale).sp,
                             textAlign = TextAlign.Center,
                         )
-
-                        SpeedSlider(speed = speed, scale = scale, onChange = controller::setSpeed)
                     }
 
                     ActionPad(

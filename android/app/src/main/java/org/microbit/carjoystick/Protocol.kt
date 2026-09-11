@@ -1,8 +1,7 @@
 package org.microbit.carjoystick
 
 import java.util.UUID
-import kotlin.math.abs
-import kotlin.math.max
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 /**
@@ -21,62 +20,81 @@ object Uart {
 }
 
 /**
- * Protocol (see microbit-makecode.ts):
+ * Protocol (see microbit/microbit-makecode.ts):
  *
- *   M,<left>,<right>   set both motor speeds, from -100 to 100, and keep
- *                      them running until the next command
- *   S                  stop
+ *   <DIR>,<SPEED>      where the stick is: DIR is one of N NE E SE S SW W NW
+ *                      or C (centre), SPEED is 0..100 — how far from the centre
+ *                      the thumb is. Held until the next command.
  *   A | B | C          one-shot actions
  *
- * Speeds latch, and the app sends a heartbeat while moving so the micro:bit's
- * watchdog can stop the car if the link dies.
+ * The app no longer works out wheel speeds. It says where the stick is and the
+ * micro:bit decides what each wheel does with that, which is why there is no
+ * speed slider any more: distance from the centre *is* the speed.
+ *
+ * Note that "C" the colour button and "C,0" the centred stick are different
+ * commands; the micro:bit tells them apart by the comma, so no action command
+ * may ever contain one. Speeds latch, and the app sends a heartbeat while
+ * moving so the micro:bit's watchdog can stop the car if the link dies.
  */
 object Protocol {
     const val HEARTBEAT_MS = 350L  // must stay well under the micro:bit's watchdog
     const val PUMP_MS = 100L       // heartbeat tick and retry after a failed write
-    const val TURN_RATIO = 0.7     // how much a sideways press biases the wheels
-    const val SPIN_RATIO = 0.75    // speed used when turning in place
 
-    const val STOP = "S"
+    /** Stick home: the one motion command that means "stop". */
+    const val STOP = "C,0"
+
+    /** A key or gamepad button has no throw to measure, so it drives at a fixed
+     *  push: brisk enough to be useful, short of full tilt. */
+    const val KEY_SPEED = 70
+
+    /** How far an axis must be pushed before it names a direction, as a fraction
+     *  of the full throw. This is joy.js's rule, so the two controllers agree on
+     *  where the dead zone ends. */
+    const val DEAD_ZONE = 0.4f
 
     /** Commands the micro:bit has no branch for: they land in the empty `else`. */
     val UNHANDLED = setOf("D")
 
-    fun isMotion(command: String): Boolean = command == STOP || command.startsWith("M")
+    /** A motion command carries a comma and an action never does — the same test
+     *  the micro:bit uses to tell "C,0" from the colour button "C". */
+    fun isMotion(command: String): Boolean = command.contains(",")
+
+    fun motion(direction: String, speed: Int): String =
+        if (direction == "C") STOP else "$direction,$speed"
 
     /**
-     * Tank mixing: forward/back sets both wheels, left/right biases them. Pressing
-     * a side on its own spins the car in place, which is what the old LEFT/RIGHT
-     * commands did; pressing it together with UP or DOWN gives a real curve.
+     * Where a stick pushed to (x, y) is pointing. Both are fractions of the full
+     * throw on their own axis, with y positive upwards. The two axes are read
+     * separately and their names concatenated, so up-and-right is "NE".
      */
-    fun motionFor(held: Set<Command>, speed: Int): String {
+    fun directionAt(x: Float, y: Float): String {
+        val vertical = if (y > DEAD_ZONE) "N" else if (y < -DEAD_ZONE) "S" else ""
+        val horizontal = if (x > DEAD_ZONE) "E" else if (x < -DEAD_ZONE) "W" else ""
+        return (vertical + horizontal).ifEmpty { "C" }
+    }
+
+    /**
+     * How hard the stick is pushed, 0..100: its distance from the centre. Each
+     * axis is clamped on its own, so a corner push overshoots 100 and is capped.
+     */
+    fun speedAt(x: Float, y: Float): Int =
+        (hypot(x, y) * 100f).roundToInt().coerceIn(0, 100)
+
+    /** Held keys become the same nine positions the stick reports. */
+    fun directionFor(held: Set<Command>): String {
         val forward = (if (Command.UP in held) 1 else 0) - (if (Command.DOWN in held) 1 else 0)
         val side = (if (Command.RIGHT in held) 1 else 0) - (if (Command.LEFT in held) 1 else 0)
 
-        if (forward == 0 && side == 0) return STOP
+        val vertical = if (forward > 0) "N" else if (forward < 0) "S" else ""
+        val horizontal = if (side > 0) "E" else if (side < 0) "W" else ""
 
-        var left: Double
-        var right: Double
-
-        if (forward == 0) {
-            left = side * speed * SPIN_RATIO
-            right = -left
-        } else {
-            val bias = side * speed * TURN_RATIO
-            left = forward * speed + bias
-            right = forward * speed - bias
-
-            /* Scale both wheels down together rather than clipping one of them,
-               so the curve keeps its shape at full speed. */
-            val peak = max(abs(left), abs(right))
-            if (peak > 100) {
-                left = left * 100 / peak
-                right = right * 100 / peak
-            }
-        }
-
-        return "M,${left.roundToInt()},${right.roundToInt()}"
+        return (vertical + horizontal).ifEmpty { "C" }
     }
+}
+
+/** Where the stick is right now, in the protocol's own terms. */
+data class Stick(val direction: String = "C", val speed: Int = 0) {
+    val isCentred: Boolean get() = direction == "C"
 }
 
 enum class Command {

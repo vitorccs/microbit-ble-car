@@ -5,11 +5,13 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,7 +26,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -32,26 +33,31 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.roundToInt
 
 /* ============================ Building blocks ============================ */
 
@@ -121,39 +127,107 @@ private fun lighten(color: Color): Color = Color(
     blue = (color.blue + 0.12f).coerceAtMost(1f),
 )
 
-/* ================================= D-pad ================================= */
+/* =============================== Joystick ================================ */
 
+/* Proportions of the control's overall size. They mirror joy.js's drawing, so
+   the two controllers feel the same under the thumb — in particular the throw,
+   which together with Protocol.DEAD_ZONE decides where each direction begins. */
+private const val THROW_RATIO = 0.25f   // how far the knob's centre may travel
+private const val KNOB_RATIO = 0.18f    // the knob's own radius
+private const val RING_RATIO = 0.42f    // the circle marking full throw
+
+/**
+ * The analogue stick. It reports where it is pushed — a cardinal direction and
+ * how far from the centre — and nothing about wheels: the micro:bit works those
+ * out. Letting go recentres it, which is the only "stop" the car ever gets from
+ * a driving gesture.
+ */
 @Composable
-fun DPad(
-    held: Set<Command>,
-    scale: Float,
-    onPress: (Command) -> Unit,
-    onRelease: (Command) -> Unit,
+fun Joystick(
+    diameter: Dp,
+    onMove: (direction: String, speed: Int) -> Unit,
 ) {
-    val keySize = (62 * scale).dp
-    val shape = RoundedCornerShape(14.dp)
+    val report by rememberUpdatedState(onMove)
+    var knob by remember { mutableStateOf(Offset.Zero) }   // from the centre, in px
+    val throwPx = with(LocalDensity.current) { diameter.toPx() } * THROW_RATIO
 
-    @Composable
-    fun Key(command: Command, glyph: String) = PadButton(
-        label = glyph,
-        color = Palette.dpad,
-        active = command in held,
-        shape = shape,
-        size = keySize,
-        fontSize = (22 * scale).sp,
-        onPress = { onPress(command) },
-        onRelease = { onRelease(command) },
-    )
+    /* Each axis is clamped on its own, as joy.js does, so a corner push reads as
+       a full diagonal instead of being pulled back onto a circle. */
+    fun moveTo(raw: Offset) {
+        val offset = Offset(
+            raw.x.coerceIn(-throwPx, throwPx),
+            raw.y.coerceIn(-throwPx, throwPx),
+        )
+        knob = offset
 
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Key(Command.UP, "▲")
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Key(Command.LEFT, "◀")
-            Spacer(Modifier.size(keySize))
-            Key(Command.RIGHT, "▶")
-        }
-        Key(Command.DOWN, "▼")
+        val x = offset.x / throwPx
+        val y = -offset.y / throwPx   // screen y grows downwards; the stick's does not
+        val direction = Protocol.directionAt(x, y)
+        report(direction, if (direction == "C") 0 else Protocol.speedAt(x, y))
     }
+
+    Box(
+        Modifier
+            .size(diameter)
+            .clip(CircleShape)
+            .background(Palette.panelDark)
+            /* Keyed on the diameter, which is all `moveTo` reads from the
+               composition: rekeying on every recomposition would drop the drag
+               the movement itself caused. */
+            .pointerInput(diameter) {
+                val centre = Offset(size.width / 2f, size.height / 2f)
+                detectDragGestures(
+                    onDragStart = { position -> moveTo(position - centre) },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        moveTo(change.position - centre)
+                    },
+                    onDragEnd = { moveTo(Offset.Zero) },
+                    onDragCancel = { moveTo(Offset.Zero) },
+                )
+            },
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val centre = Offset(size.width / 2f, size.height / 2f)
+            val span = size.minDimension
+            val knobCentre = centre + knob
+            val knobRadius = span * KNOB_RATIO
+
+            drawCircle(
+                color = Palette.stickRing,
+                radius = span * RING_RATIO,
+                center = centre,
+                style = Stroke(width = 3.dp.toPx()),
+            )
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(Palette.blue, Palette.blueDark),
+                    center = knobCentre,
+                    radius = knobRadius,
+                ),
+                radius = knobRadius,
+                center = knobCentre,
+            )
+            drawCircle(
+                color = Palette.blueDark,
+                radius = knobRadius,
+                center = knobCentre,
+                style = Stroke(width = 2.dp.toPx()),
+            )
+        }
+    }
+}
+
+/** Direction and speed under the thumb: with the slider gone, the only place
+ *  the speed the car is being given can be read. */
+@Composable
+fun StickReadout(stick: Stick, scale: Float) {
+    Text(
+        text = "${stick.direction}  ·  ${stick.speed}",
+        color = if (stick.isCentred) Palette.muted else Palette.blue,
+        fontSize = (12 * scale).sp,
+        fontWeight = FontWeight.Bold,
+    )
 }
 
 /* =============================== Action pad =============================== */
@@ -224,36 +298,6 @@ fun BluetoothButton(
             color = Color.White,
             fontSize = (38 * scale).sp,
             fontWeight = FontWeight.Bold,
-        )
-    }
-}
-
-/* ================================ Speed ================================= */
-
-@Composable
-fun SpeedSlider(speed: Int, scale: Float, onChange: (Int) -> Unit) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.width((170 * scale).dp),
-    ) {
-        Text(
-            text = "VELOCIDADE  $speed",
-            color = Palette.muted,
-            fontSize = (11 * scale).sp,
-            fontWeight = FontWeight.Bold,
-        )
-        Slider(
-            value = speed.toFloat(),
-            onValueChange = { onChange((it / 5).roundToInt() * 5) },
-            valueRange = 20f..100f,
-            steps = 15,   // 20..100 in steps of 5 is 17 stops, so 15 in between
-            colors = SliderDefaults.colors(
-                thumbColor = Palette.blue,
-                activeTrackColor = Palette.blue,
-                inactiveTrackColor = Palette.panelDark,
-                activeTickColor = Color.Transparent,
-                inactiveTickColor = Color.Transparent,
-            ),
         )
     }
 }
@@ -353,8 +397,8 @@ fun DevicePicker(
 @Composable
 fun Legend(scale: Float) {
     Text(
-        text = "Segure para andar  ·  combine duas setas para curvar  ·  " +
-            "teclado: setas ou WASD para dirigir, J K L para A B C",
+        text = "Arraste o analógico para dirigir  ·  quanto mais longe do centro, " +
+            "mais rápido  ·  teclado: setas ou WASD, J K L para A B C",
         color = Palette.muted,
         fontSize = (10 * scale).sp,
         textAlign = TextAlign.Center,

@@ -43,11 +43,15 @@ class CarController(application: Application) : AndroidViewModel(application) {
     private val _status = MutableStateFlow(Status("Bluetooth desconectado"))
     val status: StateFlow<Status> = _status.asStateFlow()
 
-    private val _speed = MutableStateFlow(50)
-    val speed: StateFlow<Int> = _speed.asStateFlow()
+    /* ---- Where the car is being steered from ----
+       Two sources, and the stick wins whenever it is off centre: letting go of
+       it must hand the car back to a key that is still down, rather than
+       stopping it. Only the stick is shown, because only it has a readout. */
+    private val _stick = MutableStateFlow(Stick())
+    val stick: StateFlow<Stick> = _stick.asStateFlow()
 
-    private val _held = MutableStateFlow<Set<Command>>(emptySet())
-    val held: StateFlow<Set<Command>> = _held.asStateFlow()
+    /** Arrow keys and gamepad D-pad currently down. */
+    private var held: Set<Command> = emptySet()
 
     /** Action buttons have no held state, so their press just blinks. */
     private val _flashing = MutableStateFlow<Set<Command>>(emptySet())
@@ -117,9 +121,23 @@ class CarController(application: Application) : AndroidViewModel(application) {
         _showLog.value = !_showLog.value
     }
 
-    fun setSpeed(value: Int) {
-        _speed.value = value
-        setMotion(Protocol.motionFor(_held.value, value))  // take effect mid-drive
+    /* ------------------------------ Steering ------------------------------ */
+
+    /** Called by the on-screen stick on every move, and on its release. */
+    fun onStickMoved(direction: String, speed: Int) {
+        val moved = Stick(direction, speed)
+        if (moved == _stick.value) return
+        _stick.value = moved
+        setMotion(motionCommand())
+    }
+
+    /** The stick has the wheel while it is off centre; the keys take over only
+     *  once it is home, so letting go of the stick hands a still-held key back
+     *  its direction instead of stopping the car. */
+    private fun motionCommand(): String {
+        val stick = _stick.value
+        if (!stick.isCentred) return Protocol.motion(stick.direction, stick.speed)
+        return Protocol.motion(Protocol.directionFor(held), Protocol.KEY_SPEED)
     }
 
     /* ----------------------------- Connection ----------------------------- */
@@ -137,7 +155,7 @@ class CarController(application: Application) : AndroidViewModel(application) {
            rolling until its watchdog fires. */
         releaseAll()
         viewModelScope.launch {
-            delay(200)   // let "S" go out
+            delay(200)   // let the stop go out
             link.disconnect()
             onDisconnected()
         }
@@ -232,7 +250,7 @@ class CarController(application: Application) : AndroidViewModel(application) {
     }
 
     private fun reset() {
-        clearHeld()               // silently: there is no link left to send "S" over
+        clearHeld()               // silently: there is no link left to send a stop over
         actionQueue.clear()
         desiredMotion = Protocol.STOP
         lastSentMotion = null     // the next connection must resend the state
@@ -324,9 +342,9 @@ class CarController(application: Application) : AndroidViewModel(application) {
 
         when {
             command == Protocol.STOP -> setStatus("Parado")
-            command.startsWith("M") -> {
+            Protocol.isMotion(command) -> {
                 val parts = command.split(",")
-                setStatus("Motores  E ${parts.getOrElse(1) { "?" }}  D ${parts.getOrElse(2) { "?" }}")
+                setStatus("Direção ${parts.getOrElse(0) { "?" }}  ·  Velocidade ${parts.getOrElse(1) { "?" }}")
             }
             command in Protocol.UNHANDLED ->
                 setStatus("$command enviado (o micro:bit ignora este comando)")
@@ -343,28 +361,32 @@ class CarController(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        if (command in _held.value) return
-        _held.value = _held.value + command
-        setMotion(Protocol.motionFor(_held.value, _speed.value))
+        if (command in held) return
+        held = held + command
+        setMotion(motionCommand())
     }
 
     fun release(command: Command) {
-        if (command !in _held.value) return
-        _held.value = _held.value - command
-        setMotion(Protocol.motionFor(_held.value, _speed.value))
+        if (command !in held) return
+        held = held - command
+        setMotion(motionCommand())
     }
 
-    /** Leaving the app or losing focus must not leave a button stuck down. */
+    /** Leaving the app or losing focus must not leave the car with a standing
+     *  order to drive: the stick gets no release event when the app goes away,
+     *  so it is centred here rather than waiting for the watchdog. */
     fun releaseAll() {
-        if (_held.value.isEmpty()) return
-        _held.value = emptySet()
+        if (held.isEmpty() && _stick.value.isCentred) return
+        held = emptySet()
+        _stick.value = Stick()
         setMotion(Protocol.STOP)
     }
 
-    /** Forget every held button without sending anything (used when the link is
+    /** Forget every held key without sending anything (used when the link is
      *  already gone). The micro:bit's own watchdog stops the car in that case. */
     private fun clearHeld() {
-        _held.value = emptySet()
+        held = emptySet()
+        _stick.value = Stick()
     }
 
     private fun flash(command: Command) {
