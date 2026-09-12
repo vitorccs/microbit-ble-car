@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -61,6 +62,7 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /* ============================ Building blocks ============================ */
 
@@ -130,8 +132,9 @@ private fun lighten(color: Color): Color = Color(
 
 /* =============================== Joystick ================================ */
 
-/** Which way a stick is allowed to move. The other axis is pinned to centre. */
-enum class Axis { VERTICAL, HORIZONTAL }
+/** Which way a stick is allowed to move. The other axis is pinned to centre;
+ *  [BOTH] pins neither, for the single-stick mode. */
+enum class Axis { VERTICAL, HORIZONTAL, BOTH }
 
 /* Proportions of the control's overall size. They mirror joy.js's drawing, so
    the two controllers feel the same under the thumb — in particular the throw,
@@ -156,23 +159,32 @@ fun Joystick(
     diameter: Dp,
     axis: Axis,
     onMove: (direction: String, speed: Int) -> Unit,
+    foldSpin: Boolean = false,
 ) {
     val report by rememberUpdatedState(onMove)
     var knob by remember { mutableStateOf(Offset.Zero) }   // from the centre, in px
     val throwPx = with(LocalDensity.current) { diameter.toPx() } * THROW_RATIO
 
     /* The locked axis is pinned to zero before anything else looks at it, so the
-       knob, the direction and the speed all agree that it never moved. */
+       knob, the direction and the speed all agree that it never moved. With no
+       axis locked the throw is capped as a circle rather than per axis, or the
+       corners would reach further than straight ahead. */
     fun moveTo(raw: Offset) {
-        val offset = Offset(
-            if (axis == Axis.VERTICAL) 0f else raw.x.coerceIn(-throwPx, throwPx),
-            if (axis == Axis.HORIZONTAL) 0f else raw.y.coerceIn(-throwPx, throwPx),
-        )
+        val offset = if (axis == Axis.BOTH) {
+            val reach = raw.getDistance()
+            if (reach > throwPx) raw * (throwPx / reach) else raw
+        } else {
+            Offset(
+                if (axis == Axis.VERTICAL) 0f else raw.x.coerceIn(-throwPx, throwPx),
+                if (axis == Axis.HORIZONTAL) 0f else raw.y.coerceIn(-throwPx, throwPx),
+            )
+        }
         knob = offset
 
         val x = offset.x / throwPx
         val y = -offset.y / throwPx   // screen y grows downwards; the stick's does not
-        val direction = Protocol.directionAt(x, y)
+        val named = Protocol.directionAt(x, y)
+        val direction = if (foldSpin) Protocol.curveOnly(named, y) else named
         report(direction, if (direction == "C") 0 else Protocol.speedAt(x, y))
     }
 
@@ -184,7 +196,7 @@ fun Joystick(
             /* Keyed on the two things `moveTo` reads from the composition:
                rekeying on every recomposition would drop the drag the movement
                itself caused. */
-            .pointerInput(diameter, axis) {
+            .pointerInput(diameter, axis, foldSpin) {
                 val centre = Offset(size.width / 2f, size.height / 2f)
                 detectDragGestures(
                     onDragStart = { position -> moveTo(position - centre) },
@@ -210,21 +222,27 @@ fun Joystick(
                 style = Stroke(width = 3.dp.toPx()),
             )
 
-            /* A bar across the free axis, the counterpart of joy.js's
-               internalDrawArrows: it says at a glance which way this stick is
-               willing to move, so nobody fights the one that is locked. */
+            /* A bar along each free axis — a cross when both are free — the
+               counterpart of joy.js's internalDrawArrows: it says at a glance
+               which way this stick is willing to move, so nobody fights the one
+               that is locked. */
             val reach = span * RING_RATIO
-            val (from, to) = if (axis == Axis.VERTICAL) {
-                Offset(centre.x, centre.y - reach) to Offset(centre.x, centre.y + reach)
-            } else {
-                Offset(centre.x - reach, centre.y) to Offset(centre.x + reach, centre.y)
+            if (axis != Axis.HORIZONTAL) {
+                drawLine(
+                    color = Palette.stickRing,
+                    start = Offset(centre.x, centre.y - reach),
+                    end = Offset(centre.x, centre.y + reach),
+                    strokeWidth = 2.dp.toPx(),
+                )
             }
-            drawLine(
-                color = Palette.stickRing,
-                start = from,
-                end = to,
-                strokeWidth = 2.dp.toPx(),
-            )
+            if (axis != Axis.VERTICAL) {
+                drawLine(
+                    color = Palette.stickRing,
+                    start = Offset(centre.x - reach, centre.y),
+                    end = Offset(centre.x + reach, centre.y),
+                    strokeWidth = 2.dp.toPx(),
+                )
+            }
 
             drawCircle(
                 brush = Brush.radialGradient(
@@ -263,23 +281,41 @@ fun StickReadout(command: String, scale: Float) {
 /* ============================ Right stick + arc =========================== */
 
 /** Where each button sits on the arc: degrees from 3 o'clock, growing
- *  clockwise, so 200°-250° is the upper-left quadrant — the way the right
+ *  clockwise, so 195°-255° is the upper-left quadrant — the way the right
  *  thumb travels when it pivots off the stick. Reaching outwards instead would
- *  go off the edge of the device. */
+ *  go off the edge of the device. 30° apart, which is what keeps a clear gap
+ *  between their rims: any closer and three buttons that size read as one
+ *  blob. */
 private val ARC_ANGLES = listOf(
-    Triple(Command.A, 200.0, Palette.actionA),
+    Triple(Command.A, 195.0, Palette.actionA),
     Triple(Command.B, 225.0, Palette.actionB),
-    Triple(Command.C, 250.0, Palette.actionC),
+    Triple(Command.C, 255.0, Palette.actionC),
 )
 
-/** |cos 200°| and |sin 250°| are both this: the arc overhangs the stick by the
+/** |cos 195°| and |sin 255°| are both this: the arc overhangs the stick by the
  *  same amount to the left as it does upwards. */
-private const val ARC_SPREAD = 0.94f
+private const val ARC_SPREAD = 0.966f
 
 /** Action button diameter, as a fraction of the stick's. */
 const val BUTTON_RATIO = 0.28f
 
 private val ARC_GAP = 10.dp
+
+/** With one stick the three buttons have no stick to orbit, so they close up
+ *  into an even triangle instead: 120° apart, and a little bigger now that
+ *  there is room. */
+private val CLUSTER_ANGLES = listOf(
+    Triple(Command.A, 210.0, Palette.actionA),
+    Triple(Command.B, 330.0, Palette.actionB),
+    Triple(Command.C, 90.0, Palette.actionC),
+)
+
+private const val CLUSTER_BUTTON_RATIO = 0.34f
+
+/** How close the right stick comes to the edge of the panel. The arc reaches
+ *  the other way, so this side needs no room for it — only enough not to look
+ *  like it fell off. */
+val STICK_EDGE_MARGIN = 6.dp
 
 /**
  * How far past the stick's own edge the arc reaches, left and up. The caller
@@ -296,9 +332,11 @@ fun arcReach(diameter: Dp): Dp {
  * The right stick with A, B and C on an arc outside its ring, close enough for
  * the right thumb to reach without leaving the stick.
  *
- * The box is deliberately symmetric — the arc only reaches right, but reserving
- * the same width on the left keeps the stick centred in its share of the row,
- * lined up with the left one.
+ * The arc reaches left and up only, so only those two sides reserve room for
+ * it; on the right the stick keeps just [STICK_EDGE_MARGIN] of clearance, which
+ * is what puts it out by the edge of the device where the thumb already is.
+ * Vertically the reserve stays symmetric, so the stick still lines up with the
+ * left-hand one across the row.
  */
 @Composable
 fun RightStickWithActions(
@@ -307,22 +345,87 @@ fun RightStickWithActions(
     onMove: (direction: String, speed: Int) -> Unit,
     onPress: (Command) -> Unit,
 ) {
-    val buttonSize = diameter * BUTTON_RATIO
-    val radius = diameter / 2 + buttonSize / 2 + ARC_GAP
-    val radiusPx = with(LocalDensity.current) { radius.toPx() }
-
-    /* The arc only reaches left and up, but the box reserves the same on the
-       other two sides so the stick stays centred in it — and so lines up with
-       the left-hand one across the row. */
-    val span = diameter + arcReach(diameter) * 2
+    val reach = arcReach(diameter)
 
     Box(
-        modifier = Modifier.size(span),
+        modifier = Modifier
+            .width(diameter + reach + STICK_EDGE_MARGIN)
+            .height(diameter + reach * 2),
+        contentAlignment = Alignment.CenterEnd,
+    ) {
+        ActionRing(
+            diameter = diameter,
+            angles = ARC_ANGLES,
+            buttonSize = diameter * BUTTON_RATIO,
+            radius = diameter / 2 + diameter * BUTTON_RATIO / 2 + ARC_GAP,
+            flashing = flashing,
+            onPress = onPress,
+            modifier = Modifier.padding(end = STICK_EDGE_MARGIN),
+        ) {
+            Joystick(diameter = diameter, axis = Axis.HORIZONTAL, onMove = onMove)
+        }
+    }
+}
+
+/**
+ * A, B and C alone, in an even triangle — what the right-hand side becomes once
+ * the single-stick mode takes its stick away. The buttons grow a little now
+ * that nothing is in the middle, and sit as close together as the arc's own gap
+ * allows: on a 120° triangle adjacent centres are radius * sqrt(3) apart.
+ */
+@Composable
+fun ActionCluster(
+    diameter: Dp,
+    flashing: Set<Command>,
+    onPress: (Command) -> Unit,
+) {
+    val buttonSize = diameter * CLUSTER_BUTTON_RATIO
+    val radius = (buttonSize + ARC_GAP) / sqrt(3f)
+
+    Box(
+        modifier = Modifier
+            .width(radius * 2 + buttonSize + STICK_EDGE_MARGIN)
+            .height(arcReach(diameter) * 2 + diameter),
+        contentAlignment = Alignment.CenterEnd,
+    ) {
+        ActionRing(
+            diameter = radius * 2 + buttonSize,
+            angles = CLUSTER_ANGLES,
+            buttonSize = buttonSize,
+            radius = radius,
+            flashing = flashing,
+            onPress = onPress,
+            modifier = Modifier.padding(end = STICK_EDGE_MARGIN),
+        )
+    }
+}
+
+/**
+ * The three action buttons placed polar-fashion around a centre, with whatever
+ * belongs in that centre drawn underneath them. `Modifier.offset` does not grow
+ * a parent, so the buttons overflow the box on purpose; the caller is the one
+ * that reserves the room they land in.
+ */
+@Composable
+private fun ActionRing(
+    diameter: Dp,
+    angles: List<Triple<Command, Double, Color>>,
+    buttonSize: Dp,
+    radius: Dp,
+    flashing: Set<Command>,
+    onPress: (Command) -> Unit,
+    modifier: Modifier = Modifier,
+    centre: @Composable () -> Unit = {},
+) {
+    val radiusPx = with(LocalDensity.current) { radius.toPx() }
+
+    Box(
+        modifier = modifier.size(diameter),
         contentAlignment = Alignment.Center,
     ) {
-        Joystick(diameter = diameter, axis = Axis.HORIZONTAL, onMove = onMove)
+        centre()
 
-        ARC_ANGLES.forEach { (command, degrees, color) ->
+        angles.forEach { (command, degrees, color) ->
             val radians = Math.toRadians(degrees)
             PadButton(
                 label = command.name,
@@ -376,6 +479,37 @@ fun BluetoothButton(
             text = if (connected) LIVE_GLYPH else IDLE_GLYPH,
             color = Color.White,
             fontSize = (38 * scale).sp,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+/* =============================== Mode button ============================= */
+
+/**
+ * One stick or two. Deliberately smaller and duller than the Bluetooth button:
+ * it is a setting, not the thing you came here to press. The label is the
+ * number of sticks it is showing right now.
+ */
+@Composable
+fun ModeButton(
+    singleStick: Boolean,
+    scale: Float,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size((48 * scale).dp)
+            .clip(CircleShape)
+            .background(Palette.panelDark)
+            .border(3.dp, Palette.stickRing, CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = if (singleStick) "1" else "2",
+            color = Palette.text,
+            fontSize = (19 * scale).sp,
             fontWeight = FontWeight.Bold,
         )
     }

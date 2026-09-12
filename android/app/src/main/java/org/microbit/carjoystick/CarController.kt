@@ -28,6 +28,10 @@ data class Status(val text: String, val isError: Boolean = false)
 
 private const val LOG_LIMIT = 80  // lines kept in the diagnostic panel
 
+/* The one setting worth outliving the process. */
+private const val PREFS_NAME = "carjoystick"
+private const val SINGLE_STICK_KEY = "singleStick"
+
 /**
  * The controller owns every piece of state the UI reads and is the only place
  * that decides what goes on the wire. It runs entirely on the main dispatcher,
@@ -36,6 +40,9 @@ private const val LOG_LIMIT = 80  // lines kept in the diagnostic panel
 class CarController(application: Application) : AndroidViewModel(application) {
 
     private val context: Context get() = getApplication<Application>()
+
+    private val preferences =
+        application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     private val _state = MutableStateFlow(LinkState.IDLE)
     val state: StateFlow<LinkState> = _state.asStateFlow()
@@ -50,6 +57,14 @@ class CarController(application: Application) : AndroidViewModel(application) {
        car back to a key that is still down rather than stopping it. */
     private val _left = MutableStateFlow(Stick())
     private val _right = MutableStateFlow(Stick())
+
+    /** One stick or two. With one, the left stick steers on both axes and the
+     *  right one is gone, A, B and C staying behind as a cluster. Remembered
+     *  between runs, so the driver picks once. */
+    private val _singleStick = MutableStateFlow(
+        preferences.getBoolean(SINGLE_STICK_KEY, false),
+    )
+    val singleStick: StateFlow<Boolean> = _singleStick.asStateFlow()
 
     /** What the sticks and keys currently add up to, for the on-screen readout. */
     private val _readout = MutableStateFlow(Protocol.STOP)
@@ -151,6 +166,20 @@ class CarController(application: Application) : AndroidViewModel(application) {
         val left = _left.value
         val right = _right.value
 
+        /* One stick names the whole direction by itself, diagonals included, so
+           there is nothing to combine — combine() only knows single axis names
+           and would read "NE" as no vertical at all. */
+        if (_singleStick.value) {
+            if (!left.isCentred) return Protocol.motion(left.direction, left.speed)
+
+            val (vertical, horizontal) = Protocol.axesFor(held)
+            val keyed = Protocol.curveOnly(
+                Protocol.combine(vertical, horizontal),
+                if (vertical == "S") -1f else 1f,
+            )
+            return Protocol.motion(keyed, Protocol.KEY_SPEED)
+        }
+
         val direction = Protocol.combine(left.direction, right.direction)
         if (direction == "C") {
             val (vertical, horizontal) = Protocol.axesFor(held)
@@ -165,6 +194,14 @@ class CarController(application: Application) : AndroidViewModel(application) {
         val command = motionCommand()
         _readout.value = command
         setMotion(command)
+    }
+
+    /** Swap between one stick and two. Everything stops first: the car must not
+     *  be left driving on an order given by a stick that is about to vanish. */
+    fun toggleStickMode() {
+        releaseAll()
+        _singleStick.value = !_singleStick.value
+        preferences.edit().putBoolean(SINGLE_STICK_KEY, _singleStick.value).apply()
     }
 
     /* ----------------------------- Connection ----------------------------- */

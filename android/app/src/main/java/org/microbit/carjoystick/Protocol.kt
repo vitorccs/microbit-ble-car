@@ -36,6 +36,11 @@ object Uart {
  * — with a single pad, E and NE are neighbouring regions and a wobble turns a
  * curve into a spin.
  *
+ * The centre button offers the single pad anyway, for a driver who would rather
+ * steer with one thumb. There the left stick reads both axes and E and W — the
+ * two spins — are never sent at all: each is folded into the nearer diagonal by
+ * [Protocol.curveOnly], so a sideways wobble curves instead of pirouetting.
+ *
  * Note that "C" the colour button and "C,0" the centred sticks are different
  * commands; the micro:bit tells them apart by the comma, so no action command
  * may ever contain one. Speeds latch, and the app sends a heartbeat while
@@ -74,6 +79,17 @@ object Protocol {
         val horizontal = if (x > DEAD_ZONE) "E" else if (x < -DEAD_ZONE) "W" else ""
         return (vertical + horizontal).ifEmpty { "C" }
     }
+
+    /**
+     * E and W spin the car on the spot. With two sticks that takes a deliberate
+     * push on the one stick that can ask for it; with a single stick they sit a
+     * sideways wobble away from every other direction, so in that mode they are
+     * folded into the nearer diagonal instead. `y` is the vertical push,
+     * positive upwards; dead level counts as forward.
+     */
+    fun curveOnly(direction: String, y: Float): String =
+        if (direction != "E" && direction != "W") direction
+        else (if (y >= 0f) "N" else "S") + direction
 
     /**
      * How hard the stick is pushed, 0..100: its distance from the centre. Each

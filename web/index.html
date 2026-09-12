@@ -123,7 +123,9 @@
        edge of the device. The box is exactly the stick's size, existing only to
        give the buttons a centre to measure from; they overflow it into the slack
        between the stick and the panel's middle, which the script keeps clear.
-       Their size comes from the script too, in proportion to the stick. */
+       Their size comes from the script too, in proportion to the stick — as does
+       the box's, which shrinks around a plain triangle of buttons when the
+       single-stick mode takes the right stick away. */
     .arc {
         position: relative;
         flex: none;
@@ -203,6 +205,32 @@
     }
 
     @keyframes pulse { 50% { opacity: .45; } }
+
+    /* One stick or two. Deliberately smaller and duller than the Bluetooth
+       button: it is a setting, not the thing you came here to press. */
+    .mode {
+        width: min(64px, 9vh);
+        height: min(64px, 9vh);
+        border: 0;
+        border-radius: 50%;
+        background: #3a3d44;
+        color: var(--text);
+        font-size: min(24px, 3.4vh);
+        font-weight: 800;
+        line-height: 1;
+        cursor: pointer;
+        box-shadow:
+            inset 0 -4px 0 rgba(0,0,0,.4),
+            0 4px 9px rgba(0,0,0,.3);
+        transition: transform .08s, background .15s;
+    }
+
+    .mode:hover { background: #484c54; }
+
+    .mode:active {
+        transform: translateY(3px);
+        box-shadow: inset 0 -1px 0 rgba(0,0,0,.4), 0 2px 5px rgba(0,0,0,.3);
+    }
 
     .status {
         text-align: center;
@@ -298,6 +326,8 @@
                 aria-label="Connect Bluetooth"><span id="bluetooth-label">ᛒ</span></button>
         <div id="status" class="status" role="status" aria-live="polite">Bluetooth disconnected</div>
         <div id="readout" class="readout" role="status" aria-live="off">C · 0</div>
+        <button id="stick-mode" class="mode" title="One stick or two"
+                aria-label="Switch between one and two sticks">2</button>
     </section>
 
     <section class="side side-right">
@@ -364,6 +394,11 @@ const UART_TX      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // notify: micro:bi
    — with a single pad, E and NE are neighbouring regions and a wobble turns a
    curve into a spin.
 
+   The centre button offers the single pad anyway, for a driver who would
+   rather steer with one thumb. There the left stick reads both axes and E and
+   W — the two spins — are never sent at all: each is folded into the nearer
+   diagonal, so a sideways wobble curves instead of pirouetting.
+
    Note that "C" the colour button and "C,0" the centred sticks are different
    commands; the micro:bit tells them apart by the comma, so no action command
    may ever contain one. Speeds latch, and the browser sends a heartbeat while
@@ -381,22 +416,34 @@ const KEY_SPEED = 70;
 const IDLE_GLYPH = "ᛒ";
 const LIVE_GLYPH = "✓";
 
+/* Which stick layout the driver picked last, remembered between visits. */
+const MODE_KEY = "carjoystick.stickMode";
+
 /* How big to draw the sticks. joy.js takes its size once, at construction, so
    this is re-measured and both sticks rebuilt when the window changes shape. */
 const STICK_MIN = 120;
 const STICK_MAX = 320;
 
 /* Where A, B and C sit on the arc around the right stick: degrees from the
-   3 o'clock position, growing clockwise, so 200°-250° is the upper-left
-   quadrant — the way the right thumb travels when it pivots off the stick. */
-const ARC_ANGLES = { A: 200, B: 225, C: 250 };
+   3 o'clock position, growing clockwise, so 195°-255° is the upper-left
+   quadrant — the way the right thumb travels when it pivots off the stick.
+   30° apart, which is what keeps a clear gap between their rims: any closer
+   and three buttons that size read as one blob. */
+const ARC_ANGLES = { A: 195, B: 225, C: 255 };
 const ARC_GAP = 10;           // px between the stick's rim and a button's rim
 const BUTTON_RATIO = 0.28;    // button diameter, as a fraction of the stick's
 
-/* How far the outermost buttons reach along each axis: |cos 200°| and
-   |sin 250°| are both this, so the arc overhangs the stick by the same amount
+/* How far the outermost buttons reach along each axis: |cos 195°| and
+   |sin 255°| are both this, so the arc overhangs the stick by the same amount
    to the left as it does upwards. */
-const ARC_SPREAD = 0.94;
+const ARC_SPREAD = 0.966;
+
+/* With one stick the three buttons have no stick to orbit, so they close up
+   into an even triangle instead: 120° apart, and a little bigger now that
+   there is room. The radius puts the same gap between their rims as the arc
+   does — adjacent centres on a 120° triangle are radius * sqrt(3) apart. */
+const CLUSTER_ANGLES = { A: 210, B: 330, C: 90 };
+const CLUSTER_BUTTON_RATIO = 0.34;
 
 const DIRECTIONS = new Set(["UP", "DOWN", "LEFT", "RIGHT"]);
 
@@ -451,6 +498,7 @@ class CarController {
         this.rightWell       = document.getElementById("stick-right");
         this.arc             = document.getElementById("arc");
         this.readout         = document.getElementById("readout");
+        this.modeButton      = document.getElementById("stick-mode");
         this.logger          = new Logger(document.getElementById("log"));
 
         /* ---- Bluetooth ---- */
@@ -481,6 +529,10 @@ class CarController {
         this.leftJoystick  = null;    // the joy.js instances
         this.rightJoystick = null;
         this.stickSize     = 0;       // so a resize can skip a rebuild
+
+        /* One stick or two. With one, the left stick steers on both axes and
+           the right one is gone, A/B/C staying behind as a cluster. */
+        this.singleStick   = CarController.savedMode();
         this.left  = { direction: "C", speed: 0 };
         this.right = { direction: "C", speed: 0 };
         this.held  = new Set();       // arrow/WASD keys currently down
@@ -489,6 +541,7 @@ class CarController {
     /* ------------------------------ Startup ------------------------------ */
 
     init() {
+        this.showMode();
         this.buildSticks();
         this.bindControls();
         this.bindKeyboard();
@@ -520,23 +573,32 @@ class CarController {
        — a sideways wobble on the left stick moves nothing at all. */
     buildSticks() {
         const size = this.stickSizeFor();
-        const buttonSize = Math.round(size * BUTTON_RATIO);
         if (this.leftJoystick && size === this.stickSize) return;
 
         if (this.leftJoystick) this.leftJoystick.Destroy();
         if (this.rightJoystick) this.rightJoystick.Destroy();
+        this.rightJoystick = null;
 
         this.stickSize = size;
 
-        this.leftJoystick = this.buildStick("stick-left", this.leftWell, size, {
-            axisOnlyY: true
-        }, status => this.onStickMoved("left", status));
+        /* With one stick it has to reach all eight directions, so its axis lock
+           comes off; with two, each keeps its own axis. */
+        this.leftJoystick = this.buildStick("stick-left", this.leftWell, size,
+            this.singleStick ? {} : { axisOnlyY: true },
+            status => this.onStickMoved("left", status));
 
-        this.rightJoystick = this.buildStick("stick-right", this.rightWell, size, {
-            axisOnlyX: true
-        }, status => this.onStickMoved("right", status));
+        this.leftWell.setAttribute("aria-label", this.singleStick
+            ? "Stick: steering, forward and reverse"
+            : "Left stick: forward and reverse");
 
-        this.layOutArc(size, buttonSize);
+        this.rightWell.style.display = this.singleStick ? "none" : "";
+        if (!this.singleStick) {
+            this.rightJoystick = this.buildStick("stick-right", this.rightWell, size, {
+                axisOnlyX: true
+            }, status => this.onStickMoved("right", status));
+        }
+
+        this.layOutArc(size);
         this.showSticks();
     }
 
@@ -565,18 +627,29 @@ class CarController {
 
     /* A, B and C ride an arc off the right stick's upper-left. `.arc` is exactly
        the stick's size, so its centre is the stick's centre and each button is
-       just a polar offset from it; they overflow the box on purpose. */
-    layOutArc(size, buttonSize) {
-        const radius = size / 2 + buttonSize / 2 + ARC_GAP;
+       just a polar offset from it; they overflow the box on purpose.
 
-        this.arc.style.width = size + "px";
-        this.arc.style.height = size + "px";
+       With one stick there is no right stick to orbit, so the same three
+       buttons close into an even triangle and `.arc` shrinks to fit it — the
+       polar placing below is the same either way. */
+    layOutArc(size) {
+        const angles = this.singleStick ? CLUSTER_ANGLES : ARC_ANGLES;
+        const buttonSize = Math.round(
+            size * (this.singleStick ? CLUSTER_BUTTON_RATIO : BUTTON_RATIO));
 
-        Object.keys(ARC_ANGLES).forEach(command => {
+        const radius = this.singleStick
+            ? (buttonSize + ARC_GAP) / Math.sqrt(3)
+            : size / 2 + buttonSize / 2 + ARC_GAP;
+
+        const box = this.singleStick ? Math.round(2 * radius + buttonSize) : size;
+        this.arc.style.width = box + "px";
+        this.arc.style.height = box + "px";
+
+        Object.keys(angles).forEach(command => {
             const element = this.arc.querySelector('[data-command="' + command + '"]');
             if (!element) return;
 
-            const radians = ARC_ANGLES[command] * Math.PI / 180;
+            const radians = angles[command] * Math.PI / 180;
 
             element.style.width = buttonSize + "px";
             element.style.height = buttonSize + "px";
@@ -640,7 +713,9 @@ class CarController {
      * with one axis pinned it is just that axis, so no capping is needed.
      */
     onStickMoved(side, status) {
-        const direction = status.cardinalDirection;
+        const direction = this.singleStick
+            ? CarController.curveOnly(status.cardinalDirection, status.y)
+            : status.cardinalDirection;
         const speed = direction === "C"
             ? 0
             : Math.min(100, Math.round(Math.hypot(Number(status.x), Number(status.y))));
@@ -657,6 +732,39 @@ class CarController {
         this.readout.classList.toggle("live", live);
     }
 
+    /* ----------------------------- Stick mode ----------------------------- */
+
+    static savedMode() {
+        /* Storage can throw outright in a locked-down browser, and a driver who
+           never picked gets the two-stick default. */
+        try { return localStorage.getItem(MODE_KEY) === "single"; }
+        catch (error) { return false; }
+    }
+
+    toggleStickMode() {
+        this.singleStick = !this.singleStick;
+        try {
+            localStorage.setItem(MODE_KEY, this.singleStick ? "single" : "dual");
+        } catch (error) { /* the mode still works, it just won't be remembered */ }
+
+        /* Stop before rebuilding: the car must not be left driving on an order
+           given by a stick that is about to disappear. */
+        this.centreSticks();
+        this.setMotion(STOP);
+
+        this.stickSize = 0;   // the size hasn't changed, so force the rebuild
+        this.buildSticks();
+        this.showMode();
+        CarController.buzz(12);
+    }
+
+    showMode() {
+        this.modeButton.textContent = this.singleStick ? "1" : "2";
+        this.modeButton.title = this.singleStick
+            ? "One stick — tap for two"
+            : "Two sticks — tap for one";
+    }
+
     /* ------------------------------ Bindings ------------------------------ */
 
     bindControls() {
@@ -665,6 +773,7 @@ class CarController {
         });
 
         this.bluetoothButton.addEventListener("click", () => this.toggleConnection());
+        this.modeButton.addEventListener("click", () => this.toggleStickMode());
 
         document.querySelectorAll("[data-command]").forEach(button => {
             const command = button.dataset.command;
@@ -995,6 +1104,20 @@ class CarController {
        stick set the pace, which is what gives a spin in place its own throttle
        instead of a fixed rate. */
     motionCommand() {
+        /* One stick names the whole direction by itself, diagonals included, so
+           there is nothing to combine — combine() only knows single axis names
+           and would read "NE" as no vertical at all. */
+        if (this.singleStick) {
+            if (this.left.direction !== "C") {
+                return this.left.direction + "," + this.left.speed;
+            }
+            const [vertical, horizontal] = CarController.axesFor(this.held);
+            const keyed = CarController.curveOnly(
+                CarController.combine(vertical, horizontal),
+                vertical === "S" ? -1 : 1);
+            return keyed === "C" ? STOP : keyed + "," + KEY_SPEED;
+        }
+
         const direction = CarController.combine(this.left.direction, this.right.direction);
         if (direction === "C") {
             const keyed = CarController.combine(...CarController.axesFor(this.held));
@@ -1013,6 +1136,16 @@ class CarController {
         const north = vertical === "N" || vertical === "S" ? vertical : "";
         const east  = horizontal === "E" || horizontal === "W" ? horizontal : "";
         return (north + east) || "C";
+    }
+
+    /* E and W spin the car on the spot. With two sticks that takes a deliberate
+       push on the one stick that can ask for it; with a single stick they sit a
+       sideways wobble away from every other direction, so in that mode they are
+       folded into the nearer diagonal instead. `y` is the vertical push (joy.js
+       gives it positive upwards); dead level counts as forward. */
+    static curveOnly(direction, y) {
+        if (direction !== "E" && direction !== "W") return direction;
+        return (Number(y) >= 0 ? "N" : "S") + direction;
     }
 
     /* Held keys, reduced to the same pair of axis names a stick would give. */

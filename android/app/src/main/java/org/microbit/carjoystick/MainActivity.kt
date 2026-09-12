@@ -163,6 +163,7 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
     val showLog by controller.showLog.collectAsStateWithLifecycle()
     val devices by controller.devices.collectAsStateWithLifecycle()
     val picking by controller.picking.collectAsStateWithLifecycle()
+    val singleStick by controller.singleStick.collectAsStateWithLifecycle()
 
     /* Leaving the app must not leave a button stuck down. */
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -192,13 +193,19 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
                arc's reach on both sides of that stick.
                arcReach is linear in the diameter, so both fits are solved for
                rather than searched. Note the row is lopsided: the left stick
-               takes `d`, the right group `d + 2*arcReach(d)`. */
+               takes `d`, the right group `d + arcReach(d) + STICK_EDGE_MARGIN`
+               — the arc reaches left, so only that side reserves room for it.
+
+               The single-stick mode leaves the right-hand side smaller still,
+               but the sticks are sized the same way in both so that switching
+               modes doesn't resize the stick under the thumb. */
             val centreColumn = (200 * scale).dp
             val slope = (arcReach(1.dp) - arcReach(0.dp)).value
             val gapTerm = arcReach(0.dp)
 
-            // 2d + 2*arcReach(d) + centre <= maxWidth
-            val byWidth = (maxWidth - centreColumn - gapTerm * 2) / (2 + slope * 2)
+            // 2d + arcReach(d) + STICK_EDGE_MARGIN + centre <= maxWidth
+            val byWidth =
+                (maxWidth - centreColumn - STICK_EDGE_MARGIN - gapTerm) / (2 + slope)
             // the right group is square, so its height is that same span
             val byHeight = (maxHeight - gapTerm * 2) / (1 + slope * 2)
 
@@ -225,15 +232,16 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
                 ) {
                     Joystick(
                         diameter = stickDiameter,
-                        axis = Axis.VERTICAL,
+                        axis = if (singleStick) Axis.BOTH else Axis.VERTICAL,
                         onMove = { direction, speed ->
                             controller.onStickMoved(Side.LEFT, direction, speed)
                         },
+                        foldSpin = singleStick,
                     )
 
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy((16 * scale).dp),
+                        verticalArrangement = Arrangement.spacedBy((10 * scale).dp),
                         modifier = Modifier.padding(horizontal = 8.dp),
                     ) {
                         Text(
@@ -255,16 +263,30 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
                         )
 
                         StickReadout(command = readout, scale = scale)
+
+                        ModeButton(
+                            singleStick = singleStick,
+                            scale = scale,
+                            onClick = { controller.toggleStickMode(); vibrate(context) },
+                        )
                     }
 
-                    RightStickWithActions(
-                        diameter = stickDiameter,
-                        flashing = flashing,
-                        onMove = { direction, speed ->
-                            controller.onStickMoved(Side.RIGHT, direction, speed)
-                        },
-                        onPress = { controller.press(it); vibrate(context) },
-                    )
+                    if (singleStick) {
+                        ActionCluster(
+                            diameter = stickDiameter,
+                            flashing = flashing,
+                            onPress = { controller.press(it); vibrate(context) },
+                        )
+                    } else {
+                        RightStickWithActions(
+                            diameter = stickDiameter,
+                            flashing = flashing,
+                            onMove = { direction, speed ->
+                                controller.onStickMoved(Side.RIGHT, direction, speed)
+                            },
+                            onPress = { controller.press(it); vibrate(context) },
+                        )
+                    }
                 }
 
                 Box(Modifier.align(Alignment.TopEnd)) {
