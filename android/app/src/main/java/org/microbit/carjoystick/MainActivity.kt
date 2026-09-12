@@ -36,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Text
@@ -64,8 +65,6 @@ private val KEY_MAP = mapOf(
     KeyEvent.KEYCODE_BUTTON_B to Command.B,
     KeyEvent.KEYCODE_L to Command.C,
     KeyEvent.KEYCODE_BUTTON_X to Command.C,
-    KeyEvent.KEYCODE_SEMICOLON to Command.D,
-    KeyEvent.KEYCODE_BUTTON_Y to Command.D,
 )
 
 class MainActivity : ComponentActivity() {
@@ -79,8 +78,8 @@ class MainActivity : ComponentActivity() {
         if (granted.values.all { it }) {
             controller.startScan()
         } else {
-            controller.setStatus("Permissão de Bluetooth negada.", isError = true)
-            controller.log("ERRO: permissões negadas: " + granted.filterValues { !it }.keys.joinToString())
+            controller.setStatus("Bluetooth permission denied.", isError = true)
+            controller.log("ERROR: permissions denied: " + granted.filterValues { !it }.keys.joinToString())
         }
     }
 
@@ -158,7 +157,7 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
 
     val state by controller.state.collectAsStateWithLifecycle()
     val status by controller.status.collectAsStateWithLifecycle()
-    val stick by controller.stick.collectAsStateWithLifecycle()
+    val readout by controller.readout.collectAsStateWithLifecycle()
     val flashing by controller.flashing.collectAsStateWithLifecycle()
     val logLines by controller.logLines.collectAsStateWithLifecycle()
     val showLog by controller.showLog.collectAsStateWithLifecycle()
@@ -186,6 +185,25 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
                phone without a separate layout for it. */
             val scale = (maxHeight / 330.dp).coerceIn(0.62f, 1.15f)
 
+            /* The sticks are sized to what is actually left over rather than to
+               a fixed number. The right one is the demanding side: A, B and C
+               ride an arc off its ring, and RightStickWithActions is symmetric
+               so the panel's clip never cuts a button off — which costs the
+               arc's reach on both sides of that stick.
+               arcReach is linear in the diameter, so both fits are solved for
+               rather than searched. Note the row is lopsided: the left stick
+               takes `d`, the right group `d + 2*arcReach(d)`. */
+            val centreColumn = (200 * scale).dp
+            val slope = (arcReach(1.dp) - arcReach(0.dp)).value
+            val gapTerm = arcReach(0.dp)
+
+            // 2d + 2*arcReach(d) + centre <= maxWidth
+            val byWidth = (maxWidth - centreColumn - gapTerm * 2) / (2 + slope * 2)
+            // the right group is square, so its height is that same span
+            val byHeight = (maxHeight - gapTerm * 2) / (1 + slope * 2)
+
+            val stickDiameter = minOf(byWidth, byHeight, 260.dp).coerceAtLeast(72.dp)
+
             Box(
                 Modifier
                     .align(Alignment.Center)
@@ -205,16 +223,13 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy((8 * scale).dp),
-                    ) {
-                        Joystick(
-                            diameter = (176 * scale).dp,
-                            onMove = controller::onStickMoved,
-                        )
-                        StickReadout(stick = stick, scale = scale)
-                    }
+                    Joystick(
+                        diameter = stickDiameter,
+                        axis = Axis.VERTICAL,
+                        onMove = { direction, speed ->
+                            controller.onStickMoved(Side.LEFT, direction, speed)
+                        },
+                    )
 
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -238,11 +253,16 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
                             fontSize = (11 * scale).sp,
                             textAlign = TextAlign.Center,
                         )
+
+                        StickReadout(command = readout, scale = scale)
                     }
 
-                    ActionPad(
+                    RightStickWithActions(
+                        diameter = stickDiameter,
                         flashing = flashing,
-                        scale = scale,
+                        onMove = { direction, speed ->
+                            controller.onStickMoved(Side.RIGHT, direction, speed)
+                        },
                         onPress = { controller.press(it); vibrate(context) },
                     )
                 }

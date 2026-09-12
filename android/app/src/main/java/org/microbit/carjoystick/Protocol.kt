@@ -22,16 +22,21 @@ object Uart {
 /**
  * Protocol (see microbit/microbit-makecode.ts):
  *
- *   <DIR>,<SPEED>      where the stick is: DIR is one of N NE E SE S SW W NW
- *                      or C (centre), SPEED is 0..100 — how far from the centre
- *                      the thumb is. Held until the next command.
+ *   <DIR>,<SPEED>      where the sticks are: DIR is one of N NE E SE S SW W NW
+ *                      or C (centre), SPEED is 0..100 — how hard the driving
+ *                      stick is pushed. Held until the next command.
  *   A | B | C          one-shot actions
  *
- * The app no longer works out wheel speeds. It says where the stick is and the
- * micro:bit decides what each wheel does with that, which is why there is no
- * speed slider any more: distance from the centre *is* the speed.
+ * The app does not work out wheel speeds. It says which way the car should go
+ * and the micro:bit decides what each wheel does with that.
  *
- * Note that "C" the colour button and "C,0" the centred stick are different
+ * Two sticks, each locked to one axis, produce those nine directions between
+ * them: the left one gives N, S or C and the right one E, W or C, and the two
+ * names are concatenated. Splitting them across two thumbs is the whole point
+ * — with a single pad, E and NE are neighbouring regions and a wobble turns a
+ * curve into a spin.
+ *
+ * Note that "C" the colour button and "C,0" the centred sticks are different
  * commands; the micro:bit tells them apart by the comma, so no action command
  * may ever contain one. Speeds latch, and the app sends a heartbeat while
  * moving so the micro:bit's watchdog can stop the car if the link dies.
@@ -51,9 +56,6 @@ object Protocol {
      *  of the full throw. This is joy.js's rule, so the two controllers agree on
      *  where the dead zone ends. */
     const val DEAD_ZONE = 0.4f
-
-    /** Commands the micro:bit has no branch for: they land in the empty `else`. */
-    val UNHANDLED = setOf("D")
 
     /** A motion command carries a comma and an action never does — the same test
      *  the micro:bit uses to tell "C,0" from the colour button "C". */
@@ -80,25 +82,40 @@ object Protocol {
     fun speedAt(x: Float, y: Float): Int =
         (hypot(x, y) * 100f).roundToInt().coerceIn(0, 100)
 
-    /** Held keys become the same nine positions the stick reports. */
-    fun directionFor(held: Set<Command>): String {
+    /**
+     * The one place a direction name is built. Both steering sources — the two
+     * sticks and the keyboard — reduce to a vertical name and a horizontal one,
+     * and the nine directions are just those concatenated: "N" + "E" is "NE",
+     * "" + "E" is "E", and nothing at all is "C".
+     */
+    fun combine(vertical: String, horizontal: String): String {
+        val north = if (vertical == "N" || vertical == "S") vertical else ""
+        val east = if (horizontal == "E" || horizontal == "W") horizontal else ""
+        return (north + east).ifEmpty { "C" }
+    }
+
+    /** Held keys, reduced to the same pair of axis names a stick would give. */
+    fun axesFor(held: Set<Command>): Pair<String, String> {
         val forward = (if (Command.UP in held) 1 else 0) - (if (Command.DOWN in held) 1 else 0)
         val side = (if (Command.RIGHT in held) 1 else 0) - (if (Command.LEFT in held) 1 else 0)
 
-        val vertical = if (forward > 0) "N" else if (forward < 0) "S" else ""
-        val horizontal = if (side > 0) "E" else if (side < 0) "W" else ""
-
-        return (vertical + horizontal).ifEmpty { "C" }
+        return Pair(
+            if (forward > 0) "N" else if (forward < 0) "S" else "",
+            if (side > 0) "E" else if (side < 0) "W" else "",
+        )
     }
 }
 
-/** Where the stick is right now, in the protocol's own terms. */
+/** Where one stick is right now, in the protocol's own terms. */
 data class Stick(val direction: String = "C", val speed: Int = 0) {
     val isCentred: Boolean get() = direction == "C"
 }
 
+/** Which stick a movement came from. */
+enum class Side { LEFT, RIGHT }
+
 enum class Command {
-    UP, DOWN, LEFT, RIGHT, A, B, C, D;
+    UP, DOWN, LEFT, RIGHT, A, B, C;
 
     val isDirection: Boolean
         get() = this == UP || this == DOWN || this == LEFT || this == RIGHT

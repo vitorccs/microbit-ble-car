@@ -21,7 +21,6 @@ object Palette {
     val actionA = Color(0xFFE84393)
     val actionB = Color(0xFFE74C3C)
     val actionC = Color(0xFF3498DB)
-    val actionD = Color(0xFFF39C12)
 }
 
 const val IDLE_GLYPH = "ᛒ"   // ᛒ

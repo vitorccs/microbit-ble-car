@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
@@ -42,39 +42,53 @@
     }
 
     .controller {
-        width: min(900px, 96vw);
-        height: min(560px, 94vh);
-        min-height: 420px;
+        width: 96vw;
+        height: 94vh;
+        max-height: 720px;
         background: var(--panel);
         border-radius: 42px;
         box-shadow:
             0 24px 60px rgba(0,0,0,.45),
             inset 0 2px 0 rgba(255,255,255,.05);
-        padding: 38px 48px;
+        /* Fluid, because a phone held in landscape has barely 350px of height
+           to give: fixed padding there costs more than the sticks can spare.
+           The extra room at the bottom is the legend's — it is positioned over
+           the panel, so without it a full-height stick would sit on the text. */
+        padding: clamp(12px, 5vh, 38px) clamp(16px, 3vw, 48px) clamp(18px, 6vh, 46px);
         display: grid;
-        grid-template-columns: 1fr 170px 1fr;
-        align-items: center;
+        /* minmax(0, …) rather than a bare 1fr: the side columns must be free to
+           be narrower than the sticks inside them, because the script measures
+           a column to decide how big its stick may be. A bare 1fr floors at the
+           content width, so the measurement would chase its own tail. */
+        grid-template-columns: minmax(0, 1fr) 220px minmax(0, 1fr);
+        /* Stretch, not center: the script measures a column's height as well as
+           its width, and a centred grid item is only as tall as what is already
+           inside it — which is the stick, so the measurement would be circular. */
+        align-items: stretch;
         gap: 20px;
         position: relative;
     }
 
+    /* The sticks hug the outer edges, as far apart as the panel allows: that is
+       where the thumbs are when the device is held in two hands. All the slack
+       therefore falls between each stick and the centre — which is exactly where
+       the right stick's button arc reaches into. */
     .side {
         display: flex;
-        justify-content: center;
         align-items: center;
     }
 
-    /* Analogue stick.
-       The canvas is created by joy.js and sized to this box, so the box needs a
-       real pixel size before the stick is built — the script sets it. */
-    .stick {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 8px;
-    }
+    .side-left { justify-content: flex-start; }
+    .side-right { justify-content: flex-end; }
 
+    /* Analogue sticks. Each canvas is created by joy.js and sized to its well,
+       so the well needs a real pixel size before the stick is built — the script
+       sets it, along with the positions of the action buttons around the right
+       one. The left stick is locked to the vertical axis and the right one to
+       the horizontal, which is what keeps a forward push from ever becoming a
+       spin: the two are separate thumbs, not neighbouring halves of one pad. */
     .stick-well {
+        position: relative;
         border-radius: 50%;
         background: var(--panel-dark);
         box-shadow:
@@ -85,8 +99,9 @@
 
     .stick-well canvas { display: block; }
 
-    /* Direction and speed, right under the thumb: the speed is no longer set
-       by a slider, so this is the only place it can be read. */
+    /* Direction and speed as they go on the wire. It lives next to the status
+       line but is not the same thing: the status only moves when a command is
+       actually sent, so this is what proves the sticks work before pairing. */
     .readout {
         font-size: 12px;
         letter-spacing: 1px;
@@ -103,24 +118,25 @@
         outline-offset: 3px;
     }
 
-    /* A/B/C/D buttons */
-    .action-pad {
-        width: 210px;
-        height: 210px;
+    /* A, B and C sit on an arc off the right stick's upper-left, where the right
+       thumb reaches by pivoting inwards — reaching outwards would go off the
+       edge of the device. The box is exactly the stick's size, existing only to
+       give the buttons a centre to measure from; they overflow it into the slack
+       between the stick and the panel's middle, which the script keeps clear.
+       Their size comes from the script too, in proportion to the stick. */
+    .arc {
         position: relative;
+        flex: none;
     }
 
     .action {
         position: absolute;
-        width: 72px;
-        height: 72px;
         border-radius: 50%;
         border: 0;
         color: white;
-        font-size: 25px;
         font-weight: 800;
         cursor: pointer;
-        box-shadow: inset 0 -6px 0 rgba(0,0,0,.25), 0 6px 10px rgba(0,0,0,.3);
+        box-shadow: inset 0 -5px 0 rgba(0,0,0,.25), 0 5px 9px rgba(0,0,0,.3);
         transition: transform .05s;
         touch-action: none;
     }
@@ -130,13 +146,9 @@
         box-shadow: inset 0 -2px 0 rgba(0,0,0,.25), 0 2px 5px rgba(0,0,0,.3);
     }
 
-    .a { left: 0; top: 69px; background: #e84393; }
-    .b { right: 0; top: 69px; background: #e74c3c; }
-    .c { left: 69px; top: 0; background: #3498db; }
-    .d { left: 69px; bottom: 0; background: #f39c12; }
-
-    /* D has no branch in the MakeCode program yet. */
-    .action.free { opacity: .5; }
+    .a { background: #e84393; }
+    .b { background: #e74c3c; }
+    .c { background: #3498db; }
 
     .center {
         height: 100%;
@@ -144,7 +156,7 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 24px;
+        gap: clamp(8px, 3vh, 24px);
     }
 
     .brand {
@@ -156,13 +168,15 @@
     }
 
     .bluetooth {
-        width: 118px;
-        height: 118px;
+        /* Tied to the viewport height, like the sticks are: a fixed 160px would
+           swallow a landscape phone's screen. */
+        width: min(160px, 22vh);
+        height: min(160px, 22vh);
         border: 0;
         border-radius: 50%;
         background: var(--blue);
         color: white;
-        font-size: 42px;
+        font-size: min(56px, 8vh);
         line-height: 1;
         cursor: pointer;
         box-shadow:
@@ -257,14 +271,13 @@
             width: 98vw;
             height: 96vh;
             padding: 25px 18px;
-            grid-template-columns: 1fr 110px 1fr;
+            grid-template-columns: minmax(0, 1fr) 120px minmax(0, 1fr);
             gap: 5px;
             border-radius: 28px;
         }
 
-        /* The stick is sized in pixels by the script, so it is left alone here. */
-        .action-pad { transform: scale(.78); }
-        .bluetooth { width: 82px; height: 82px; font-size: 30px; }
+        /* The sticks and the arc are sized in pixels by the script, so they
+           are left alone here. */
         .brand { font-size: 13px; }
         .status { font-size: 11px; }
         .legend { display: none; }
@@ -274,40 +287,38 @@
 
 <body>
 <main class="controller">
-    <section class="side">
-        <div class="stick">
-            <div id="joystick" class="stick-well" role="application"
-                 aria-label="Controle analógico de direção"></div>
-            <div id="readout" class="readout" role="status" aria-live="off">C · 0</div>
-        </div>
+    <section class="side side-left">
+        <div id="stick-left" class="stick-well" role="application"
+             aria-label="Left stick: forward and reverse"></div>
     </section>
 
     <section class="center">
         <div class="brand">MICRO:BIT<br>CAR</div>
-        <button id="bluetooth" class="bluetooth" title="Conectar ao micro:bit"
-                aria-label="Conectar Bluetooth"><span id="bluetooth-label">ᛒ</span></button>
-        <div id="status" class="status" role="status" aria-live="polite">Bluetooth desconectado</div>
+        <button id="bluetooth" class="bluetooth" title="Connect to the micro:bit"
+                aria-label="Connect Bluetooth"><span id="bluetooth-label">ᛒ</span></button>
+        <div id="status" class="status" role="status" aria-live="polite">Bluetooth disconnected</div>
+        <div id="readout" class="readout" role="status" aria-live="off">C · 0</div>
     </section>
 
-    <section class="side">
-        <div class="action-pad" role="group" aria-label="Botões">
+    <section class="side side-right">
+        <div id="arc" class="arc" role="group" aria-label="Steering and buttons">
+            <div id="stick-right" class="stick-well" role="application"
+                 aria-label="Right stick: left and right"></div>
             <button class="action a" data-command="A"
-                    aria-label="A: liga e desliga os LEDs">A</button>
+                    aria-label="A: turns the LEDs on and off">A</button>
             <button class="action b" data-command="B"
-                    aria-label="B: carinha zangada e buzina">B</button>
+                    aria-label="B: angry face and horn">B</button>
             <button class="action c" data-command="C"
-                    aria-label="C: muda a cor dos LEDs">C</button>
-            <button class="action d free" data-command="D"
-                    aria-label="D: sem função no micro:bit">D</button>
+                    aria-label="C: changes the LED colour">C</button>
         </div>
     </section>
 
     <div class="legend">
-        Arraste o analógico para dirigir &nbsp;·&nbsp; quanto mais longe do centro, mais rápido &nbsp;·&nbsp; setas ou WASD também dirigem &nbsp;·&nbsp; J K L para A B C
+        Use the arrow keys (or WASD) and the J, K and L keys
     </div>
 
-    <button id="log-toggle" class="log-toggle" title="Registro de diagnóstico"
-            aria-label="Mostrar registro de diagnóstico">?</button>
+    <button id="log-toggle" class="log-toggle" title="Diagnostic log"
+            aria-label="Show diagnostic log">?</button>
 </main>
 
 <pre id="log" class="log" aria-live="polite"></pre>
@@ -339,16 +350,21 @@ const UART_TX      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // notify: micro:bi
 /* ------------------------------------------------------------------
    Protocol (see microbit/microbit-makecode.ts):
 
-     <DIR>,<SPEED>      where the stick is: DIR is one of N NE E SE S SW W NW
-                        or C (centre), SPEED is 0..100 — how far from the
-                        centre the thumb is. Held until the next command.
+     <DIR>,<SPEED>      where the sticks are: DIR is one of N NE E SE S SW W NW
+                        or C (centre), SPEED is 0..100 — how hard the driving
+                        stick is pushed. Held until the next command.
      A | B | C          one-shot actions
 
-   The page no longer works out wheel speeds. It says where the stick is and
-   the micro:bit decides what each wheel does with that, which is why the
-   speed slider is gone: distance from the centre *is* the speed.
+   The page does not work out wheel speeds. It says which way the car should
+   go and the micro:bit decides what each wheel does with that.
 
-   Note that "C" the colour button and "C,0" the centred stick are different
+   Two sticks, each locked to one axis, produce those nine directions between
+   them: the left one gives N, S or C and the right one E, W or C, and the two
+   names are concatenated. Splitting them across two thumbs is the whole point
+   — with a single pad, E and NE are neighbouring regions and a wobble turns a
+   curve into a spin.
+
+   Note that "C" the colour button and "C,0" the centred sticks are different
    commands; the micro:bit tells them apart by the comma, so no action command
    may ever contain one. Speeds latch, and the browser sends a heartbeat while
    moving so the micro:bit's watchdog can stop the car if the link dies. */
@@ -356,25 +372,31 @@ const UART_TX      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // notify: micro:bi
 const HEARTBEAT_MS = 350;   // must stay well under the micro:bit's watchdog
 const PUMP_MS      = 100;   // heartbeat tick and retry after a failed write
 
-const STOP = "C,0";         // stick home — the one motion command that stops
+const STOP = "C,0";         // sticks home — the one motion command that stops
 
 /* The keyboard has no throw to measure, so a key press drives at a fixed
    push: brisk enough to be useful, short of full tilt. */
 const KEY_SPEED = 70;
 
-/* Commands the micro:bit has no branch for: they land in the empty `else`. */
-const UNHANDLED = new Set(["D"]);
-
 const IDLE_GLYPH = "ᛒ";
 const LIVE_GLYPH = "✓";
 
-/* How big to draw the stick. joy.js takes its size once, at construction, so
-   this is re-measured and the stick rebuilt when the window changes shape.
-   CENTRE_COLUMN is the width the Bluetooth column claims between the two side
-   columns, and is what the stick has to share the remaining width with. */
-const STICK_MIN = 130;
-const STICK_MAX = 230;
-const CENTRE_COLUMN = 200;
+/* How big to draw the sticks. joy.js takes its size once, at construction, so
+   this is re-measured and both sticks rebuilt when the window changes shape. */
+const STICK_MIN = 120;
+const STICK_MAX = 320;
+
+/* Where A, B and C sit on the arc around the right stick: degrees from the
+   3 o'clock position, growing clockwise, so 200°-250° is the upper-left
+   quadrant — the way the right thumb travels when it pivots off the stick. */
+const ARC_ANGLES = { A: 200, B: 225, C: 250 };
+const ARC_GAP = 10;           // px between the stick's rim and a button's rim
+const BUTTON_RATIO = 0.28;    // button diameter, as a fraction of the stick's
+
+/* How far the outermost buttons reach along each axis: |cos 200°| and
+   |sin 250°| are both this, so the arc overhangs the stick by the same amount
+   to the left as it does upwards. */
+const ARC_SPREAD = 0.94;
 
 const DIRECTIONS = new Set(["UP", "DOWN", "LEFT", "RIGHT"]);
 
@@ -383,8 +405,8 @@ const KEY_MAP = {
     arrowdown: "DOWN", s: "DOWN",
     arrowleft: "LEFT", a: "LEFT",
     arrowright: "RIGHT", d: "RIGHT",
-    /* A B C D sit on the home row: the letter keys are taken by WASD. */
-    j: "A", k: "B", l: "C", ";": "D"
+    /* A B C sit on the home row: the letter keys are taken by WASD. */
+    j: "A", k: "B", l: "C"
 };
 
 const LOG_LIMIT = 80;   // lines kept in the diagnostic panel
@@ -404,7 +426,7 @@ class Logger {
     }
 
     write(line) {
-        const stamp = new Date().toLocaleTimeString("pt-BR", { hour12: false });
+        const stamp = new Date().toLocaleTimeString("en-GB", { hour12: false });
         this.lines.push(stamp + "  " + line);
         if (this.lines.length > LOG_LIMIT) this.lines.shift();
         this.element.textContent = this.lines.join("\n");
@@ -425,7 +447,9 @@ class CarController {
         this.bluetoothLabel  = document.getElementById("bluetooth-label");
         this.statusEl        = document.getElementById("status");
         this.logToggle       = document.getElementById("log-toggle");
-        this.stickWell       = document.getElementById("joystick");
+        this.leftWell        = document.getElementById("stick-left");
+        this.rightWell       = document.getElementById("stick-right");
+        this.arc             = document.getElementById("arc");
         this.readout         = document.getElementById("readout");
         this.logger          = new Logger(document.getElementById("log"));
 
@@ -449,19 +473,23 @@ class CarController {
         this.actionQueue    = [];
 
         /* ---- Where the car is being steered from ----
-           Two sources, and the stick wins whenever it is off centre: letting go
-           of it must hand the car back to a key that is still down, rather than
+           The left stick gives N, S or C; the right one E, W or C. Together
+           they name one of the nine directions. The keyboard is a third source
+           and only gets a say once both sticks are home, so letting go of a
+           stick hands the car back to a key that is still down rather than
            stopping it. */
-        this.joystick  = null;                       // the joy.js instance
-        this.stickSize = 0;                          // so a resize can skip a rebuild
-        this.stick     = { direction: "C", speed: 0 };
-        this.held      = new Set();                  // arrow/WASD keys currently down
+        this.leftJoystick  = null;    // the joy.js instances
+        this.rightJoystick = null;
+        this.stickSize     = 0;       // so a resize can skip a rebuild
+        this.left  = { direction: "C", speed: 0 };
+        this.right = { direction: "C", speed: 0 };
+        this.held  = new Set();       // arrow/WASD keys currently down
     }
 
     /* ------------------------------ Startup ------------------------------ */
 
     init() {
-        this.buildStick();
+        this.buildSticks();
         this.bindControls();
         this.bindKeyboard();
         this.bindWindow();
@@ -470,33 +498,54 @@ class CarController {
            returns immediately once there is nothing left to send. */
         setInterval(() => { if (this.rxCharacteristic) this.pump(); }, PUMP_MS);
 
-        this.log("origem: " + location.origin + "  contexto seguro: " + window.isSecureContext);
+        this.log("origin: " + location.origin + "  secure context: " + window.isSecureContext);
 
         const startupProblem = CarController.unsupportedReason();
         if (startupProblem) {
             this.setStatus(startupProblem, true);
-            this.log("ERRO: " + startupProblem);
+            this.log("ERROR: " + startupProblem);
         }
     }
 
-    /* ------------------------------ Joystick ------------------------------ */
+    /* ------------------------------ Joysticks ----------------------------- */
 
-    /* joy.js reads the canvas size once, when it is constructed, so the stick is
-       thrown away and rebuilt whenever the window changes shape. Destroy() takes
-       its document-level move handlers with it — without that they would pile up
-       and keep driving a canvas that is no longer on the page. */
-    buildStick() {
-        const size = CarController.stickSizeFor();
-        if (this.joystick && size === this.stickSize) return;
+    /* joy.js reads the canvas size once, when it is constructed, so both sticks
+       are thrown away and rebuilt whenever the window changes shape. Destroy()
+       takes their document-level move handlers with them — without that they
+       would pile up and keep driving a canvas no longer on the page.
 
-        if (this.joystick) this.joystick.Destroy();
+       axisOnlyY / axisOnlyX are joy.js's own: they pin the other axis to the
+       centre, so getCardinalDirection can only ever answer N/S/C on the left
+       and E/W/C on the right. That is what makes an accidental spin impossible
+       — a sideways wobble on the left stick moves nothing at all. */
+    buildSticks() {
+        const size = this.stickSizeFor();
+        const buttonSize = Math.round(size * BUTTON_RATIO);
+        if (this.leftJoystick && size === this.stickSize) return;
+
+        if (this.leftJoystick) this.leftJoystick.Destroy();
+        if (this.rightJoystick) this.rightJoystick.Destroy();
 
         this.stickSize = size;
-        this.stickWell.style.width = size + "px";
-        this.stickWell.style.height = size + "px";
 
-        this.joystick = new JoyStick("joystick", {
-            title: "stick-canvas",
+        this.leftJoystick = this.buildStick("stick-left", this.leftWell, size, {
+            axisOnlyY: true
+        }, status => this.onStickMoved("left", status));
+
+        this.rightJoystick = this.buildStick("stick-right", this.rightWell, size, {
+            axisOnlyX: true
+        }, status => this.onStickMoved("right", status));
+
+        this.layOutArc(size, buttonSize);
+        this.showSticks();
+    }
+
+    buildStick(id, well, size, axis, onMove) {
+        well.style.width = size + "px";
+        well.style.height = size + "px";
+
+        const options = {
+            title: id + "-canvas",
             width: size,
             height: size,
             internalFillColor: "#4285f4",
@@ -504,42 +553,107 @@ class CarController {
             internalLineWidth: 2,
             externalStrokeColor: "#5b5f67",
             externalLineWidth: 3,
+            /* Draws the arrow for the free axis only, which says at a glance
+               which way each stick is willing to move. */
+            internalDrawArrows: true,
             autoReturnToCenter: true
-        }, status => this.onStickMoved(status));
+        };
+        Object.assign(options, axis);
 
-        this.showStick();
+        return new JoyStick(id, options, onMove);
     }
 
-    /* Big enough to aim with a thumb, small enough to leave the panel room: the
-       stick shares the width with the action pad and the column between them,
-       and the height with the brand line and the legend. */
-    static stickSizeFor() {
+    /* A, B and C ride an arc off the right stick's upper-left. `.arc` is exactly
+       the stick's size, so its centre is the stick's centre and each button is
+       just a polar offset from it; they overflow the box on purpose. */
+    layOutArc(size, buttonSize) {
+        const radius = size / 2 + buttonSize / 2 + ARC_GAP;
+
+        this.arc.style.width = size + "px";
+        this.arc.style.height = size + "px";
+
+        Object.keys(ARC_ANGLES).forEach(command => {
+            const element = this.arc.querySelector('[data-command="' + command + '"]');
+            if (!element) return;
+
+            const radians = ARC_ANGLES[command] * Math.PI / 180;
+
+            element.style.width = buttonSize + "px";
+            element.style.height = buttonSize + "px";
+            element.style.fontSize = Math.round(buttonSize * 0.38) + "px";
+
+            /* 50% puts the button's top-left at the box centre; half its own
+               size pulls it back so the two centres line up. */
+            element.style.left =
+                "calc(50% + " + (radius * Math.cos(radians) - buttonSize / 2) + "px)";
+            element.style.top =
+                "calc(50% + " + (radius * Math.sin(radians) - buttonSize / 2) + "px)";
+        });
+    }
+
+    /**
+     * How far the arc sticks out past the stick's own edge, for a given stick
+     * size. Everything it depends on is a fraction of that size, so it comes out
+     * linear — which is what lets stickSizeFor solve for a fit instead of
+     * searching for one.
+     */
+    static arcOverhang(size) {
+        const button = size * BUTTON_RATIO;
+        const radius = size / 2 + button / 2 + ARC_GAP;
+        return ARC_SPREAD * radius + button / 2 - size / 2;
+    }
+
+    /** The largest stick whose arc still fits inside `room`, with the overhang
+     *  counted `sides` times — once when all the slack is on one side. */
+    static stickThatFits(room, sides) {
+        /* arcOverhang(size) = SLOPE * size + INTERCEPT; solve
+           size + sides * arcOverhang(size) <= room. */
+        const slope = CarController.arcOverhang(1) - CarController.arcOverhang(0);
+        const intercept = CarController.arcOverhang(0);
+        return (room - sides * intercept) / (1 + sides * slope);
+    }
+
+    /* Big enough to aim with a thumb, small enough that nothing spills out of
+       the panel. Horizontally the arc only has to clear one side: the sticks are
+       pushed to the outer edges, so every bit of slack in a column sits between
+       the stick and the middle, which is the way the arc reaches. Vertically it
+       reaches up only, but the stick is centred, so that slack is halved. */
+    stickSizeFor() {
+        /* The `.side` section, not `.arc`: the arc has no size of its own until
+           this very method has decided on one, so measuring it would read zero
+           and peg both sticks at their minimum forever. */
+        const column = this.arc.parentElement;
         const room = Math.min(
-            (window.innerWidth - CENTRE_COLUMN) / 2,
-            window.innerHeight * 0.62
+            CarController.stickThatFits(column.clientWidth, 1),
+            CarController.stickThatFits(column.clientHeight, 2)
         );
-        return Math.round(Math.min(STICK_MAX, Math.max(STICK_MIN, room)));
+        /* Floor, not round: rounding up would put the outermost button half a
+           pixel past the column. The STICK_MIN floor can still overshoot on a
+           very narrow screen, by a few pixels that land in the panel's padding
+           — nothing on the way out clips, so that stays a cosmetic overlap. */
+        return Math.floor(Math.min(STICK_MAX, Math.max(STICK_MIN, room)));
     }
 
     /**
      * joy.js hands us the cardinal direction and the thumb offset on each axis,
-     * both already normalised to ±100. The speed is how far the thumb is from
-     * the centre — the diagonal of two full axes overshoots 100, so it is capped.
+     * both already normalised to ±100. Speed is the distance from the centre;
+     * with one axis pinned it is just that axis, so no capping is needed.
      */
-    onStickMoved(status) {
+    onStickMoved(side, status) {
         const direction = status.cardinalDirection;
         const speed = direction === "C"
             ? 0
             : Math.min(100, Math.round(Math.hypot(Number(status.x), Number(status.y))));
 
-        this.stick = { direction: direction, speed: speed };
-        this.showStick();
+        this[side] = { direction: direction, speed: speed };
+        this.showSticks();
         this.setMotion(this.motionCommand());
     }
 
-    showStick() {
-        const live = this.stick.direction !== "C";
-        this.readout.textContent = this.stick.direction + " · " + this.stick.speed;
+    showSticks() {
+        const command = this.motionCommand();
+        const live = command !== STOP;
+        this.readout.textContent = command.replace(",", " · ");
         this.readout.classList.toggle("live", live);
     }
 
@@ -599,7 +713,7 @@ class CarController {
         let pending = 0;
         window.addEventListener("resize", () => {
             clearTimeout(pending);
-            pending = setTimeout(() => this.buildStick(), 250);
+            pending = setTimeout(() => this.buildSticks(), 250);
         });
     }
 
@@ -618,10 +732,10 @@ class CarController {
 
     static unsupportedReason() {
         if (!window.isSecureContext) {
-            return "Abra a página em HTTPS ou localhost para usar Bluetooth.";
+            return "Open this page over HTTPS or on localhost to use Bluetooth.";
         }
         if (!navigator.bluetooth) {
-            return "Este navegador não suporta Web Bluetooth. Use Chrome, Edge ou Opera.";
+            return "This browser has no Web Bluetooth. Use Chrome, Edge or Opera.";
         }
         return null;
     }
@@ -646,7 +760,7 @@ class CarController {
         }
 
         try {
-            this.setStatus("Escolha o seu micro:bit na lista...");
+            this.setStatus("Pick your micro:bit from the list...");
 
             /* The micro:bit does not advertise the UART service in its
                advertisement packet, so filtering only by service finds nothing.
@@ -663,17 +777,17 @@ class CarController {
             this.device.addEventListener("gattserverdisconnected", () => this.onDisconnected());
 
             this.bluetoothButton.classList.add("busy");
-            this.setStatus("Conectando...");
+            this.setStatus("Connecting...");
             this.statusLock = true;
 
-            this.log("dispositivo: " + (this.device.name || "(sem nome)"));
+            this.log("device: " + (this.device.name || "(sem nome)"));
 
             const server  = await this.device.gatt.connect();
             const service = await server.getPrimaryService(UART_SERVICE);
             this.rxCharacteristic = await service.getCharacteristic(UART_RX);
 
             const props = this.rxCharacteristic.properties || {};
-            this.log("características de escrita: write=" + Boolean(props.write) +
+            this.log("write properties: write=" + Boolean(props.write) +
                 " writeWithoutResponse=" + Boolean(props.writeWithoutResponse));
 
             /* The micro:bit's RX characteristic always advertises write. If it does
@@ -681,10 +795,10 @@ class CarController {
                service instead of failing silently on the first button press. */
             if (!props.write && !props.writeWithoutResponse) {
                 await this.describeService(service);
-                this.log("PROBLEMA: a característica " + UART_RX + " não aceita escrita.");
+                this.log("PROBLEM: characteristic " + UART_RX + " does not accept writes.");
                 this.statusLock = false;
                 this.reset();
-                this.setStatus("Serviço UART inacessível — veja o log", true);
+                this.setStatus("UART service unreachable — see the log", true);
                 document.body.classList.add("show-log");
                 return;
             }
@@ -698,18 +812,18 @@ class CarController {
             /* The pump opens with a stop so the car is known to be still; keep
                that off the status line so the connection message survives. */
             this.lastReported = STOP;
-            this.setStatus("Conectado a " + (this.device.name || "micro:bit"));
-            this.log("conectado");
+            this.setStatus("Connected to " + (this.device.name || "micro:bit"));
+            this.log("connected");
         } catch (error) {
             this.statusLock = false;
             this.reset();
 
             if (error && error.name === "NotFoundError") {
-                this.setStatus("Nenhum micro:bit escolhido.");
-                this.log("seleção cancelada");
+                this.setStatus("No micro:bit chosen.");
+                this.log("selection cancelled");
             } else {
-                this.log("ERRO ao conectar: " + Logger.describe(error));
-                this.setStatus("Falha ao conectar — veja o log", true);
+                this.log("ERROR connecting: " + Logger.describe(error));
+                this.setStatus("Could not connect — see the log", true);
             }
         }
     }
@@ -721,11 +835,11 @@ class CarController {
             const tx = await service.getCharacteristic(UART_TX);
             await tx.startNotifications();
             tx.addEventListener("characteristicvaluechanged", event => {
-                this.log("micro:bit disse: " + new TextDecoder().decode(event.target.value));
+                this.log("micro:bit said: " + new TextDecoder().decode(event.target.value));
             });
-            this.log("notificações ativas");
+            this.log("notifications on");
         } catch (error) {
-            this.log("sem notificações (" + Logger.describe(error) + ") — não impede o controle");
+            this.log("no notifications (" + Logger.describe(error) + ") — does not stop the controls");
         }
     }
 
@@ -734,21 +848,21 @@ class CarController {
     async describeService(service) {
         try {
             const characteristics = await service.getCharacteristics();
-            this.log("características encontradas no serviço UART: " + characteristics.length);
+            this.log("characteristics found on the UART service: " + characteristics.length);
             characteristics.forEach(characteristic => {
                 const p = characteristic.properties || {};
                 const flags = Object.keys(p).filter(key => p[key]);
                 this.log("  " + characteristic.uuid + " → " +
-                    (flags.length ? flags.join(", ") : "(nenhuma propriedade)"));
+                    (flags.length ? flags.join(", ") : "(no properties)"));
             });
         } catch (error) {
-            this.log("não foi possível listar as características: " + Logger.describe(error));
+            this.log("could not list the characteristics: " + Logger.describe(error));
         }
     }
 
     onDisconnected() {
         this.reset();
-        this.setStatus("Bluetooth desconectado");
+        this.setStatus("Bluetooth disconnected");
     }
 
     reset() {
@@ -796,7 +910,7 @@ class CarController {
             if (this.desiredMotion !== STOP || this.actionQueue.length) {
                 this.actionQueue.length = 0;
                 this.desiredMotion = STOP;
-                this.setStatus("Conecte o micro:bit primeiro.", true);
+                this.setStatus("Connect the micro:bit first.", true);
             }
             return;
         }
@@ -812,8 +926,8 @@ class CarController {
                 } catch (error) {
                     /* Leave lastSentMotion alone so the next tick retries. A failed
                        stop is the dangerous one, and it will be retried in ~100ms. */
-                    this.log("ERRO ao enviar " + command + ": " + Logger.describe(error));
-                    this.setStatus("Erro ao enviar — veja o log", true);
+                    this.log("ERROR sending " + command + ": " + Logger.describe(error));
+                    this.setStatus("Send failed — see the log", true);
                     break;
                 }
 
@@ -840,7 +954,7 @@ class CarController {
                 await this.rxCharacteristic.writeValueWithoutResponse(payload);
                 return;
             } catch (error) {
-                this.log("writeValueWithoutResponse falhou (" + Logger.describe(error) + "), usando writeValue");
+                this.log("writeValueWithoutResponse failed (" + Logger.describe(error) + "), using writeValue");
             }
         }
 
@@ -857,45 +971,59 @@ class CarController {
         if (command === this.lastReported) return;   // don't log every heartbeat
         this.lastReported = command;
 
-        this.log("enviado: " + command);
+        this.log("sent: " + command);
         if (this.statusLock) return;
 
         if (command === STOP) {
-            this.setStatus("Parado");
+            this.setStatus("Stopped");
         } else if (CarController.isMotion(command)) {
             const [direction, speed] = command.split(",");
-            this.setStatus("Direção " + direction + "  ·  Velocidade " + speed);
+            this.setStatus("Direction " + direction + "  ·  Speed " + speed);
         } else {
-            this.setStatus(UNHANDLED.has(command)
-                ? command + " enviado (o micro:bit ignora este comando)"
-                : "→ " + command);
+            this.setStatus("→ " + command);
         }
     }
 
     /* --------------------------- Press handling --------------------------- */
 
-    /* The stick has the wheel while it is off centre; the keys take over only
-       once it is home, so letting go of the stick hands a still-held key back
-       its direction instead of stopping the car. */
+    /* The sticks have the wheel while either is off centre; the keys take over
+       only once both are home, so letting go of a stick hands a still-held key
+       back its direction instead of stopping the car.
+
+       Speed comes from the left stick whenever it is driving — it is the one
+       that decides how fast the car goes. Only when it is home does the right
+       stick set the pace, which is what gives a spin in place its own throttle
+       instead of a fixed rate. */
     motionCommand() {
-        if (this.stick.direction !== "C") {
-            return this.stick.direction + "," + this.stick.speed;
+        const direction = CarController.combine(this.left.direction, this.right.direction);
+        if (direction === "C") {
+            const keyed = CarController.combine(...CarController.axesFor(this.held));
+            return keyed === "C" ? STOP : keyed + "," + KEY_SPEED;
         }
 
-        const direction = CarController.directionFor(this.held);
-        return direction === "C" ? STOP : direction + "," + KEY_SPEED;
+        const speed = this.left.direction !== "C" ? this.left.speed : this.right.speed;
+        return direction + "," + speed;
     }
 
-    /* Held keys become the same nine positions the stick reports: the two axes
-       are read separately and their names concatenated, so UP+RIGHT is "NE". */
-    static directionFor(keys) {
+    /* The one place a direction name is built. Both steering sources — the two
+       sticks and the keyboard — reduce to a vertical name and a horizontal one,
+       and the nine directions are just those concatenated: "N" + "E" is "NE",
+       "" + "E" is "E", and nothing at all is "C". */
+    static combine(vertical, horizontal) {
+        const north = vertical === "N" || vertical === "S" ? vertical : "";
+        const east  = horizontal === "E" || horizontal === "W" ? horizontal : "";
+        return (north + east) || "C";
+    }
+
+    /* Held keys, reduced to the same pair of axis names a stick would give. */
+    static axesFor(keys) {
         const forward = (keys.has("UP") ? 1 : 0) - (keys.has("DOWN") ? 1 : 0);
         const side    = (keys.has("RIGHT") ? 1 : 0) - (keys.has("LEFT") ? 1 : 0);
 
-        const vertical   = forward > 0 ? "N" : forward < 0 ? "S" : "";
-        const horizontal = side    > 0 ? "E" : side    < 0 ? "W" : "";
-
-        return (vertical + horizontal) || "C";
+        return [
+            forward > 0 ? "N" : forward < 0 ? "S" : "",
+            side    > 0 ? "E" : side    < 0 ? "W" : ""
+        ];
     }
 
     press(command) {
@@ -921,21 +1049,24 @@ class CarController {
     }
 
     /* joy.js only recentres on a pointer release, which never arrives if the tab
-       is hidden mid-drag, so the stick is centred here too rather than leaving
-       the car with a standing order to drive. */
+       is hidden mid-drag, so both sticks are centred here too rather than
+       leaving the car with a standing order to drive. */
     releaseAll() {
-        this.held.clear();
-        this.stick = { direction: "C", speed: 0 };
-        this.showStick();
+        this.centreSticks();
         this.setMotion(STOP);
     }
 
     /* Forget every held key without sending anything (used when the link is
        already gone). The micro:bit's own watchdog stops the car in that case. */
     clearHeld() {
+        this.centreSticks();
+    }
+
+    centreSticks() {
         this.held.clear();
-        this.stick = { direction: "C", speed: 0 };
-        this.showStick();
+        this.left  = { direction: "C", speed: 0 };
+        this.right = { direction: "C", speed: 0 };
+        this.showSticks();
     }
 
     /* Action buttons have no held state, so their press just blinks. */

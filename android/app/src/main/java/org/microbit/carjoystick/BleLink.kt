@@ -91,8 +91,8 @@ class BleLink(
             }
 
             override fun onScanFailed(errorCode: Int) {
-                log("ERRO na busca: código $errorCode")
-                close(BleException("Falha ao buscar dispositivos (código $errorCode)"))
+                log("ERROR while scanning: code $errorCode")
+                close(BleException("Device scan failed (code $errorCode)"))
             }
         }
 
@@ -126,16 +126,16 @@ class BleLink(
 
         val discovered = CompletableDeferred<Unit>()
         pendingDiscovery = discovered
-        if (gatt?.discoverServices() != true) throw BleException("Não foi possível listar os serviços.")
+        if (gatt?.discoverServices() != true) throw BleException("Could not list the services.")
         withTimeout(15_000) { discovered.await() }
 
         val service = gatt?.getService(Uart.SERVICE)
-            ?: throw BleException("Serviço UART não encontrado — o micro:bit está com o programa certo?")
+            ?: throw BleException("UART service not found — is the right program on the micro:bit?")
 
         val characteristic = service.getCharacteristic(Uart.RX)
             ?: run {
                 describeService(service)
-                throw BleException("Característica de escrita ${Uart.RX} não encontrada — veja o log")
+                throw BleException("Write characteristic ${Uart.RX} not found — see the log")
             }
 
         val canWrite = characteristic.properties and
@@ -143,7 +143,7 @@ class BleLink(
                 BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0
 
         log(
-            "características de escrita: write=" +
+            "write properties: write=" +
                 (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) +
                 " writeWithoutResponse=" +
                 (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0)
@@ -154,7 +154,7 @@ class BleLink(
            service instead of failing silently on the first button press. */
         if (!canWrite) {
             describeService(service)
-            throw BleException("Serviço UART inacessível — veja o log")
+            throw BleException("UART service unreachable — see the log")
         }
 
         rx = characteristic
@@ -165,7 +165,7 @@ class BleLink(
      *  car, but anything arriving here proves the link really works. */
     private suspend fun subscribeNotifications(service: BluetoothGattService) {
         try {
-            val tx = service.getCharacteristic(Uart.TX) ?: throw BleException("sem característica de notificação")
+            val tx = service.getCharacteristic(Uart.TX) ?: throw BleException("no notify characteristic")
             val active = gatt?.setCharacteristicNotification(tx, true) == true
             if (!active) throw BleException("setCharacteristicNotification recusado")
 
@@ -185,17 +185,17 @@ class BleLink(
             if (!started) throw BleException("escrita do CCCD recusada")
 
             withTimeout(5_000) { done.await() }
-            log("notificações ativas")
+            log("notifications on")
         } catch (error: Exception) {
             pendingDescriptor = null
-            log("sem notificações (${describe(error)}) — não impede o controle")
+            log("no notifications (${describe(error)}) — does not stop the controls")
         }
     }
 
     /** Dumps every characteristic the UART service has, which is what
      *  distinguishes a stale cache from a genuinely different service. */
     private fun describeService(service: BluetoothGattService) {
-        log("características encontradas no serviço UART: ${service.characteristics.size}")
+        log("characteristics found on the UART service: ${service.characteristics.size}")
         service.characteristics.forEach { characteristic ->
             log("  ${characteristic.uuid} → ${propertyNames(characteristic.properties)}")
         }
@@ -229,8 +229,8 @@ class BleLink(
      * one write is on the wire at a time.
      */
     suspend fun write(payload: ByteArray) = writeMutex.withLock {
-        val characteristic = rx ?: throw BleException("sem conexão")
-        val activeGatt = gatt ?: throw BleException("sem conexão")
+        val characteristic = rx ?: throw BleException("not connected")
+        val activeGatt = gatt ?: throw BleException("not connected")
 
         val noResponse = characteristic.properties and
             BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0
@@ -297,7 +297,7 @@ class BleLink(
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 pendingDiscovery?.complete(Unit)
             } else {
-                pendingDiscovery?.completeExceptionally(BleException("descoberta de serviços falhou (status $status)"))
+                pendingDiscovery?.completeExceptionally(BleException("service discovery failed (status $status)"))
             }
             pendingDiscovery = null
         }

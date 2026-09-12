@@ -40,15 +40,20 @@ class CarController(application: Application) : AndroidViewModel(application) {
     private val _state = MutableStateFlow(LinkState.IDLE)
     val state: StateFlow<LinkState> = _state.asStateFlow()
 
-    private val _status = MutableStateFlow(Status("Bluetooth desconectado"))
+    private val _status = MutableStateFlow(Status("Bluetooth disconnected"))
     val status: StateFlow<Status> = _status.asStateFlow()
 
     /* ---- Where the car is being steered from ----
-       Two sources, and the stick wins whenever it is off centre: letting go of
-       it must hand the car back to a key that is still down, rather than
-       stopping it. Only the stick is shown, because only it has a readout. */
-    private val _stick = MutableStateFlow(Stick())
-    val stick: StateFlow<Stick> = _stick.asStateFlow()
+       The left stick gives N, S or C; the right one E, W or C. Together they
+       name one of the nine directions. The keyboard is a third source and only
+       gets a say once both sticks are home, so letting go of a stick hands the
+       car back to a key that is still down rather than stopping it. */
+    private val _left = MutableStateFlow(Stick())
+    private val _right = MutableStateFlow(Stick())
+
+    /** What the sticks and keys currently add up to, for the on-screen readout. */
+    private val _readout = MutableStateFlow(Protocol.STOP)
+    val readout: StateFlow<String> = _readout.asStateFlow()
 
     /** Arrow keys and gamepad D-pad currently down. */
     private var held: Set<Command> = emptySet()
@@ -94,7 +99,7 @@ class CarController(application: Application) : AndroidViewModel(application) {
     private val link = BleLink(
         context = application,
         log = { line -> viewModelScope.launch { log(line) } },
-        onNotify = { text -> viewModelScope.launch { log("micro:bit disse: ${text.trim()}") } },
+        onNotify = { text -> viewModelScope.launch { log("micro:bit said: ${text.trim()}") } },
         onDisconnected = { viewModelScope.launch { onDisconnected() } },
     )
 
@@ -112,7 +117,7 @@ class CarController(application: Application) : AndroidViewModel(application) {
     }
 
     fun log(line: String) {
-        val stamp = SimpleDateFormat("HH:mm:ss", Locale.forLanguageTag("pt-BR")).format(Date())
+        val stamp = SimpleDateFormat("HH:mm:ss", Locale.UK).format(Date())
         _logLines.value = (_logLines.value + "$stamp  $line").takeLast(LOG_LIMIT)
         Log.d("car", line)
     }
@@ -123,21 +128,43 @@ class CarController(application: Application) : AndroidViewModel(application) {
 
     /* ------------------------------ Steering ------------------------------ */
 
-    /** Called by the on-screen stick on every move, and on its release. */
-    fun onStickMoved(direction: String, speed: Int) {
+    /** Called by an on-screen stick on every move, and on its release. */
+    fun onStickMoved(side: Side, direction: String, speed: Int) {
+        val flow = if (side == Side.LEFT) _left else _right
         val moved = Stick(direction, speed)
-        if (moved == _stick.value) return
-        _stick.value = moved
-        setMotion(motionCommand())
+        if (moved == flow.value) return
+        flow.value = moved
+        steer()
     }
 
-    /** The stick has the wheel while it is off centre; the keys take over only
-     *  once it is home, so letting go of the stick hands a still-held key back
-     *  its direction instead of stopping the car. */
+    /**
+     * The sticks have the wheel while either is off centre; the keys take over
+     * only once both are home, so letting go of a stick hands a still-held key
+     * back its direction instead of stopping the car.
+     *
+     * Speed comes from the left stick whenever it is driving — it is the one
+     * that decides how fast the car goes. Only when it is home does the right
+     * stick set the pace, which is what gives a spin in place its own throttle
+     * instead of a fixed rate.
+     */
     private fun motionCommand(): String {
-        val stick = _stick.value
-        if (!stick.isCentred) return Protocol.motion(stick.direction, stick.speed)
-        return Protocol.motion(Protocol.directionFor(held), Protocol.KEY_SPEED)
+        val left = _left.value
+        val right = _right.value
+
+        val direction = Protocol.combine(left.direction, right.direction)
+        if (direction == "C") {
+            val (vertical, horizontal) = Protocol.axesFor(held)
+            return Protocol.motion(Protocol.combine(vertical, horizontal), Protocol.KEY_SPEED)
+        }
+
+        return Protocol.motion(direction, if (!left.isCentred) left.speed else right.speed)
+    }
+
+    /** Work out the new command, show it, and queue it. */
+    private fun steer() {
+        val command = motionCommand()
+        _readout.value = command
+        setMotion(command)
     }
 
     /* ----------------------------- Connection ----------------------------- */
@@ -167,28 +194,28 @@ class CarController(application: Application) : AndroidViewModel(application) {
         _picking.value = false
         _state.value = LinkState.IDLE
         statusLock = false
-        setStatus("Busca cancelada")
+        setStatus("Scan cancelled")
     }
 
     fun startScan() {
         val adapter = adapter
         if (adapter == null || !adapter.isEnabled) {
-            setStatus("Ligue o Bluetooth do aparelho.", isError = true)
-            log("ERRO: Bluetooth desligado ou indisponível")
+            setStatus("Turn on Bluetooth on this device.", isError = true)
+            log("ERROR: Bluetooth off or unavailable")
             return
         }
 
         _devices.value = emptyList()
         _picking.value = true
         _state.value = LinkState.SCANNING
-        setStatus("Procurando o seu micro:bit...")
+        setStatus("Looking for your micro:bit...")
 
         scanJob?.cancel()
         scanJob = viewModelScope.launch {
             link.scan(adapter)
                 .catch { error ->
-                    log("ERRO na busca: ${describe(error)}")
-                    setStatus("Falha ao buscar — veja o log", isError = true)
+                    log("ERROR while scanning: ${describe(error)}")
+                    setStatus("Scan failed — see the log", isError = true)
                     _picking.value = false
                     _state.value = LinkState.IDLE
                 }
@@ -201,8 +228,8 @@ class CarController(application: Application) : AndroidViewModel(application) {
         _picking.value = false
         if (_state.value == LinkState.SCANNING) {
             _state.value = LinkState.IDLE
-            setStatus("Nenhum micro:bit escolhido.")
-            log("seleção cancelada")
+            setStatus("No micro:bit chosen.")
+            log("selection cancelled")
         }
     }
 
@@ -217,8 +244,8 @@ class CarController(application: Application) : AndroidViewModel(application) {
         connectJob = viewModelScope.launch {
             _state.value = LinkState.CONNECTING
             statusLock = true
-            setStatus("Conectando...")
-            log("dispositivo: $name")
+            setStatus("Connecting...")
+            log("device: $name")
 
             try {
                 link.connect(device)
@@ -229,15 +256,15 @@ class CarController(application: Application) : AndroidViewModel(application) {
                 lastReported = Protocol.STOP
                 lastSentMotion = null
                 desiredMotion = Protocol.STOP
-                setStatus("Conectado a $name")
-                log("conectado")
+                setStatus("Connected to $name")
+                log("connected")
                 wake.trySend(Unit)
             } catch (error: Exception) {
                 statusLock = false
                 link.disconnect()
                 reset()
-                log("ERRO ao conectar: ${describe(error)}")
-                setStatus("Falha ao conectar — veja o log", isError = true)
+                log("ERROR connecting: ${describe(error)}")
+                setStatus("Could not connect — see the log", isError = true)
                 _showLog.value = true
             }
         }
@@ -246,7 +273,7 @@ class CarController(application: Application) : AndroidViewModel(application) {
     private fun onDisconnected() {
         if (_state.value == LinkState.IDLE) return
         reset()
-        setStatus("Bluetooth desconectado")
+        setStatus("Bluetooth disconnected")
     }
 
     private fun reset() {
@@ -297,7 +324,7 @@ class CarController(application: Application) : AndroidViewModel(application) {
                 if (desiredMotion != Protocol.STOP || actionQueue.isNotEmpty()) {
                     actionQueue.clear()
                     desiredMotion = Protocol.STOP
-                    if (_state.value == LinkState.IDLE) setStatus("Conecte o micro:bit primeiro.", isError = true)
+                    if (_state.value == LinkState.IDLE) setStatus("Connect the micro:bit first.", isError = true)
                 }
                 waitForWork()
                 continue
@@ -314,8 +341,8 @@ class CarController(application: Application) : AndroidViewModel(application) {
             } catch (error: Exception) {
                 /* Leave lastSentMotion alone so the next tick retries. A failed
                    stop is the dangerous one, and it will be retried in ~100ms. */
-                log("ERRO ao enviar $command: ${describe(error)}")
-                setStatus("Erro ao enviar — veja o log", isError = true)
+                log("ERROR sending $command: ${describe(error)}")
+                setStatus("Send failed — see the log", isError = true)
                 waitForWork()
                 continue
             }
@@ -337,17 +364,15 @@ class CarController(application: Application) : AndroidViewModel(application) {
         if (command == lastReported) return   // don't log every heartbeat
         lastReported = command
 
-        log("enviado: $command")
+        log("sent: $command")
         if (statusLock) return
 
         when {
-            command == Protocol.STOP -> setStatus("Parado")
+            command == Protocol.STOP -> setStatus("Stopped")
             Protocol.isMotion(command) -> {
                 val parts = command.split(",")
-                setStatus("Direção ${parts.getOrElse(0) { "?" }}  ·  Velocidade ${parts.getOrElse(1) { "?" }}")
+                setStatus("Direction ${parts.getOrElse(0) { "?" }}  ·  Speed ${parts.getOrElse(1) { "?" }}")
             }
-            command in Protocol.UNHANDLED ->
-                setStatus("$command enviado (o micro:bit ignora este comando)")
             else -> setStatus("→ $command")
         }
     }
@@ -363,30 +388,35 @@ class CarController(application: Application) : AndroidViewModel(application) {
 
         if (command in held) return
         held = held + command
-        setMotion(motionCommand())
+        steer()
     }
 
     fun release(command: Command) {
         if (command !in held) return
         held = held - command
-        setMotion(motionCommand())
+        steer()
     }
 
     /** Leaving the app or losing focus must not leave the car with a standing
-     *  order to drive: the stick gets no release event when the app goes away,
-     *  so it is centred here rather than waiting for the watchdog. */
+     *  order to drive: a stick gets no release event when the app goes away, so
+     *  both are centred here rather than waiting for the watchdog. */
     fun releaseAll() {
-        if (held.isEmpty() && _stick.value.isCentred) return
-        held = emptySet()
-        _stick.value = Stick()
+        if (held.isEmpty() && _left.value.isCentred && _right.value.isCentred) return
+        centreSticks()
         setMotion(Protocol.STOP)
     }
 
     /** Forget every held key without sending anything (used when the link is
      *  already gone). The micro:bit's own watchdog stops the car in that case. */
     private fun clearHeld() {
+        centreSticks()
+    }
+
+    private fun centreSticks() {
         held = emptySet()
-        _stick.value = Stick()
+        _left.value = Stick()
+        _right.value = Stick()
+        _readout.value = Protocol.STOP
     }
 
     private fun flash(command: Command) {

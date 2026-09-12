@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -56,8 +55,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.cos
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /* ============================ Building blocks ============================ */
 
@@ -96,7 +99,6 @@ private fun PadButton(
     size: androidx.compose.ui.unit.Dp,
     fontSize: androidx.compose.ui.unit.TextUnit,
     modifier: Modifier = Modifier,
-    dimmed: Boolean = false,
     onPress: () -> Unit,
     onRelease: () -> Unit,
 ) {
@@ -106,7 +108,6 @@ private fun PadButton(
             /* The CSS pressed state drops the button by a few pixels and takes
                its bottom shadow away; the offset alone reads the same here. */
             .offset(y = if (active) 4.dp else 0.dp)
-            .alpha(if (dimmed) 0.5f else 1f)
             .clip(shape)
             .background(if (active) lighten(color) else color)
             .then(holdGestures(onPress, onRelease)),
@@ -129,6 +130,9 @@ private fun lighten(color: Color): Color = Color(
 
 /* =============================== Joystick ================================ */
 
+/** Which way a stick is allowed to move. The other axis is pinned to centre. */
+enum class Axis { VERTICAL, HORIZONTAL }
+
 /* Proportions of the control's overall size. They mirror joy.js's drawing, so
    the two controllers feel the same under the thumb — in particular the throw,
    which together with Protocol.DEAD_ZONE decides where each direction begins. */
@@ -137,26 +141,32 @@ private const val KNOB_RATIO = 0.18f    // the knob's own radius
 private const val RING_RATIO = 0.42f    // the circle marking full throw
 
 /**
- * The analogue stick. It reports where it is pushed — a cardinal direction and
- * how far from the centre — and nothing about wheels: the micro:bit works those
- * out. Letting go recentres it, which is the only "stop" the car ever gets from
- * a driving gesture.
+ * One analogue stick, locked to a single axis. It reports where it is pushed —
+ * a cardinal direction and how far from the centre — and nothing about wheels:
+ * the micro:bit works those out. Letting go recentres it, which is the only
+ * "stop" the car ever gets from a driving gesture.
+ *
+ * The axis lock is the point of the whole design: with the left stick pinned to
+ * the vertical and the right one to the horizontal, a sideways wobble while
+ * driving forward moves nothing at all, so a curve can never become a spin by
+ * accident. It takes letting go of one stick entirely to change that.
  */
 @Composable
 fun Joystick(
     diameter: Dp,
+    axis: Axis,
     onMove: (direction: String, speed: Int) -> Unit,
 ) {
     val report by rememberUpdatedState(onMove)
     var knob by remember { mutableStateOf(Offset.Zero) }   // from the centre, in px
     val throwPx = with(LocalDensity.current) { diameter.toPx() } * THROW_RATIO
 
-    /* Each axis is clamped on its own, as joy.js does, so a corner push reads as
-       a full diagonal instead of being pulled back onto a circle. */
+    /* The locked axis is pinned to zero before anything else looks at it, so the
+       knob, the direction and the speed all agree that it never moved. */
     fun moveTo(raw: Offset) {
         val offset = Offset(
-            raw.x.coerceIn(-throwPx, throwPx),
-            raw.y.coerceIn(-throwPx, throwPx),
+            if (axis == Axis.VERTICAL) 0f else raw.x.coerceIn(-throwPx, throwPx),
+            if (axis == Axis.HORIZONTAL) 0f else raw.y.coerceIn(-throwPx, throwPx),
         )
         knob = offset
 
@@ -171,10 +181,10 @@ fun Joystick(
             .size(diameter)
             .clip(CircleShape)
             .background(Palette.panelDark)
-            /* Keyed on the diameter, which is all `moveTo` reads from the
-               composition: rekeying on every recomposition would drop the drag
-               the movement itself caused. */
-            .pointerInput(diameter) {
+            /* Keyed on the two things `moveTo` reads from the composition:
+               rekeying on every recomposition would drop the drag the movement
+               itself caused. */
+            .pointerInput(diameter, axis) {
                 val centre = Offset(size.width / 2f, size.height / 2f)
                 detectDragGestures(
                     onDragStart = { position -> moveTo(position - centre) },
@@ -199,6 +209,23 @@ fun Joystick(
                 center = centre,
                 style = Stroke(width = 3.dp.toPx()),
             )
+
+            /* A bar across the free axis, the counterpart of joy.js's
+               internalDrawArrows: it says at a glance which way this stick is
+               willing to move, so nobody fights the one that is locked. */
+            val reach = span * RING_RATIO
+            val (from, to) = if (axis == Axis.VERTICAL) {
+                Offset(centre.x, centre.y - reach) to Offset(centre.x, centre.y + reach)
+            } else {
+                Offset(centre.x - reach, centre.y) to Offset(centre.x + reach, centre.y)
+            }
+            drawLine(
+                color = Palette.stickRing,
+                start = from,
+                end = to,
+                strokeWidth = 2.dp.toPx(),
+            )
+
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(Palette.blue, Palette.blueDark),
@@ -218,50 +245,102 @@ fun Joystick(
     }
 }
 
-/** Direction and speed under the thumb: with the slider gone, the only place
- *  the speed the car is being given can be read. */
+/**
+ * Direction and speed as they go on the wire. It sits next to the status line
+ * but is not the same thing: the status only moves when a command is actually
+ * sent, so this is what proves the sticks work before pairing.
+ */
 @Composable
-fun StickReadout(stick: Stick, scale: Float) {
+fun StickReadout(command: String, scale: Float) {
     Text(
-        text = "${stick.direction}  ·  ${stick.speed}",
-        color = if (stick.isCentred) Palette.muted else Palette.blue,
+        text = command.replace(",", "  ·  "),
+        color = if (command == Protocol.STOP) Palette.muted else Palette.blue,
         fontSize = (12 * scale).sp,
         fontWeight = FontWeight.Bold,
     )
 }
 
-/* =============================== Action pad =============================== */
+/* ============================ Right stick + arc =========================== */
 
+/** Where each button sits on the arc: degrees from 3 o'clock, growing
+ *  clockwise, so 200°-250° is the upper-left quadrant — the way the right
+ *  thumb travels when it pivots off the stick. Reaching outwards instead would
+ *  go off the edge of the device. */
+private val ARC_ANGLES = listOf(
+    Triple(Command.A, 200.0, Palette.actionA),
+    Triple(Command.B, 225.0, Palette.actionB),
+    Triple(Command.C, 250.0, Palette.actionC),
+)
+
+/** |cos 200°| and |sin 250°| are both this: the arc overhangs the stick by the
+ *  same amount to the left as it does upwards. */
+private const val ARC_SPREAD = 0.94f
+
+/** Action button diameter, as a fraction of the stick's. */
+const val BUTTON_RATIO = 0.28f
+
+private val ARC_GAP = 10.dp
+
+/**
+ * How far past the stick's own edge the arc reaches, left and up. The caller
+ * needs this to size the layout: `Modifier.offset` does not grow a parent, so
+ * without the room reserved up front the panel's clip would slice a button off.
+ */
+fun arcReach(diameter: Dp): Dp {
+    val button = diameter * BUTTON_RATIO
+    val radius = diameter / 2 + button / 2 + ARC_GAP
+    return radius * ARC_SPREAD + button / 2 - diameter / 2
+}
+
+/**
+ * The right stick with A, B and C on an arc outside its ring, close enough for
+ * the right thumb to reach without leaving the stick.
+ *
+ * The box is deliberately symmetric — the arc only reaches right, but reserving
+ * the same width on the left keeps the stick centred in its share of the row,
+ * lined up with the left one.
+ */
 @Composable
-fun ActionPad(
+fun RightStickWithActions(
+    diameter: Dp,
     flashing: Set<Command>,
-    scale: Float,
+    onMove: (direction: String, speed: Int) -> Unit,
     onPress: (Command) -> Unit,
 ) {
-    val keySize = (66 * scale).dp
+    val buttonSize = diameter * BUTTON_RATIO
+    val radius = diameter / 2 + buttonSize / 2 + ARC_GAP
+    val radiusPx = with(LocalDensity.current) { radius.toPx() }
 
-    @Composable
-    fun Action(command: Command, color: Color, dimmed: Boolean = false) = PadButton(
-        label = command.name,
-        color = color,
-        active = command in flashing,
-        shape = CircleShape,
-        size = keySize,
-        fontSize = (23 * scale).sp,
-        dimmed = dimmed,
-        onPress = { onPress(command) },
-        onRelease = { },
-    )
+    /* The arc only reaches left and up, but the box reserves the same on the
+       other two sides so the stick stays centred in it — and so lines up with
+       the left-hand one across the row. */
+    val span = diameter + arcReach(diameter) * 2
 
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Action(Command.C, Palette.actionC)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Action(Command.A, Palette.actionA)
-            Spacer(Modifier.size(keySize))
-            Action(Command.B, Palette.actionB)
+    Box(
+        modifier = Modifier.size(span),
+        contentAlignment = Alignment.Center,
+    ) {
+        Joystick(diameter = diameter, axis = Axis.HORIZONTAL, onMove = onMove)
+
+        ARC_ANGLES.forEach { (command, degrees, color) ->
+            val radians = Math.toRadians(degrees)
+            PadButton(
+                label = command.name,
+                color = color,
+                active = command in flashing,
+                shape = CircleShape,
+                size = buttonSize,
+                fontSize = (buttonSize.value * 0.38f).sp,
+                modifier = Modifier.offset {
+                    IntOffset(
+                        (radiusPx * cos(radians)).roundToInt(),
+                        (radiusPx * sin(radians)).roundToInt(),
+                    )
+                },
+                onPress = { onPress(command) },
+                onRelease = { },
+            )
         }
-        /* D has no branch in the MakeCode program yet. */
-        Action(Command.D, Palette.actionD, dimmed = true)
     }
 }
 
@@ -324,7 +403,7 @@ fun LogPanel(lines: List<String>, onDismiss: () -> Unit) {
                 .background(Palette.panelDark)
                 .padding(16.dp),
         ) {
-            Text("REGISTRO  ·  toque fora para fechar", color = Palette.muted, fontSize = 11.sp)
+            Text("LOG  ·  tap outside to close", color = Palette.muted, fontSize = 11.sp)
             Spacer(Modifier.height(8.dp))
             Text(
                 text = lines.joinToString("\n"),
@@ -360,10 +439,10 @@ fun DevicePicker(
                 .background(Palette.panel)
                 .padding(20.dp),
         ) {
-            Text("Escolha o seu micro:bit", color = Palette.text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Text("Pick your micro:bit", color = Palette.text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(4.dp))
             Text(
-                if (devices.isEmpty()) "Procurando..." else "${devices.size} encontrado(s)",
+                if (devices.isEmpty()) "Searching..." else "${devices.size} found",
                 color = Palette.muted,
                 fontSize = 12.sp,
             )
@@ -397,8 +476,7 @@ fun DevicePicker(
 @Composable
 fun Legend(scale: Float) {
     Text(
-        text = "Arraste o analógico para dirigir  ·  quanto mais longe do centro, " +
-            "mais rápido  ·  teclado: setas ou WASD, J K L para A B C",
+        text = "Use the arrow keys (or WASD) and the J, K and L keys",
         color = Palette.muted,
         fontSize = (10 * scale).sp,
         textAlign = TextAlign.Center,
