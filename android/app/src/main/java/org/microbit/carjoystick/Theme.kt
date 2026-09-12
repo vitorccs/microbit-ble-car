@@ -18,6 +18,14 @@ object Palette {
     /** The circle marking the joystick's full throw. */
     val stickRing = Color(0xFF5B5F67)
 
+    /** The direction pad: the cross plate it is drawn on, and an arrow that is
+     *  not currently pointing anywhere. A lit arrow is [blue]. */
+    val padPlate = Color(0xFF33363C)
+    val padArrow = Color(0xFF6B6F78)
+
+    /** The speed button's label: blue enough to read as "how the car moves". */
+    val speedText = Color(0xFFCFE0FF)
+
     val actionA = Color(0xFFE84393)
     val actionB = Color(0xFFE74C3C)
     val actionC = Color(0xFF3498DB)

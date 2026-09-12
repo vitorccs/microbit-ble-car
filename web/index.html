@@ -99,6 +99,59 @@
 
     .stick-well canvas { display: block; }
 
+    /* The direction pad, which replaces the left stick in the single-control
+       mode. It is a digital eight-way pad, not four separate buttons: the whole
+       plate tracks one finger and the sector it lands in names the direction,
+       so a thumb can slide from "up" into the corner and get NE without ever
+       having to press two buttons at once. Four buttons could not do that with
+       one thumb, and two-thumb diagonals are exactly what this mode is meant to
+       avoid. The arrows are the labels for those sectors, and they light up to
+       say which way the car has been told to go — both of them on a diagonal. */
+    .dpad {
+        position: relative;
+        border-radius: 50%;
+        background: var(--panel-dark);
+        box-shadow:
+            inset 0 4px 12px rgba(0,0,0,.5),
+            0 4px 10px rgba(0,0,0,.25);
+        touch-action: none;
+        cursor: pointer;
+    }
+
+    /* The cross plate: two rounded bars through the centre. Purely the shape of
+       a D-pad — the sectors are worked out from the angle, not from these. */
+    .dpad::before,
+    .dpad::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        background: #33363c;
+        border-radius: 14px;
+    }
+
+    .dpad::before { width: 86%; height: 32%; }
+    .dpad::after  { width: 32%; height: 86%; }
+
+    /* One triangle per axis, rotated outwards from the centre; the script sizes
+       and places them, because the pad's own size is only known then. */
+    .dpad-arrow {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        background: #6b6f78;
+        clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+        transition: background .08s;
+        pointer-events: none;   /* the plate reads the finger, not these */
+        /* The cross is drawn by ::after as well as ::before, and ::after paints
+           over its siblings; without this the vertical bar would bury the up
+           and down arrows. */
+        z-index: 1;
+    }
+
+    .dpad-arrow.on { background: var(--blue); }
+
     /* Direction and speed as they go on the wire. It lives next to the status
        line but is not the same thing: the status only moves when a command is
        actually sent, so this is what proves the sticks work before pairing. */
@@ -206,8 +259,15 @@
 
     @keyframes pulse { 50% { opacity: .45; } }
 
-    /* One stick or two. Deliberately smaller and duller than the Bluetooth
-       button: it is a setting, not the thing you came here to press. */
+    .settings {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+    }
+
+    /* One stick or two, and — when the pad is showing — how fast it drives.
+       Deliberately smaller and duller than the Bluetooth button: these are
+       settings, not the thing you came here to press. */
     .mode {
         width: min(64px, 9vh);
         height: min(64px, 9vh);
@@ -231,6 +291,16 @@
         transform: translateY(3px);
         box-shadow: inset 0 -1px 0 rgba(0,0,0,.4), 0 2px 5px rgba(0,0,0,.3);
     }
+
+    /* Three digits where the mode button has one, so a size down. The blue says
+       this one is about how the car moves rather than how it is laid out. */
+    .mode.speed {
+        font-size: min(17px, 2.6vh);
+        color: #cfe0ff;
+    }
+
+    /* Only the pad needs a throttle: with two sticks the throw is the throttle. */
+    .mode.speed[hidden] { display: none; }
 
     .status {
         text-align: center;
@@ -318,6 +388,13 @@
     <section class="side side-left">
         <div id="stick-left" class="stick-well" role="application"
              aria-label="Left stick: forward and reverse"></div>
+        <div id="dpad" class="dpad" role="application" hidden
+             aria-label="Direction pad: up, down, left, right and the diagonals between them">
+            <div class="dpad-arrow" data-axis="N"></div>
+            <div class="dpad-arrow" data-axis="E"></div>
+            <div class="dpad-arrow" data-axis="S"></div>
+            <div class="dpad-arrow" data-axis="W"></div>
+        </div>
     </section>
 
     <section class="center">
@@ -326,8 +403,12 @@
                 aria-label="Connect Bluetooth"><span id="bluetooth-label">ᛒ</span></button>
         <div id="status" class="status" role="status" aria-live="polite">Bluetooth disconnected</div>
         <div id="readout" class="readout" role="status" aria-live="off">C · 0</div>
-        <button id="stick-mode" class="mode" title="One stick or two"
-                aria-label="Switch between one and two sticks">2</button>
+        <div class="settings">
+            <button id="stick-mode" class="mode" title="One control or two"
+                    aria-label="Switch between the direction pad and two sticks">2</button>
+            <button id="speed" class="mode speed" hidden title="Driving speed"
+                    aria-label="Driving speed for the direction pad">70</button>
+        </div>
     </section>
 
     <section class="side side-right">
@@ -391,13 +472,15 @@ const UART_TX      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // notify: micro:bi
    Two sticks, each locked to one axis, produce those nine directions between
    them: the left one gives N, S or C and the right one E, W or C, and the two
    names are concatenated. Splitting them across two thumbs is the whole point
-   — with a single pad, E and NE are neighbouring regions and a wobble turns a
-   curve into a spin.
+   — on one analogue stick, E and NE are neighbouring regions and a wobble turns
+   a curve into a spin.
 
-   The centre button offers the single pad anyway, for a driver who would
-   rather steer with one thumb. There the left stick reads both axes and E and
-   W — the two spins — are never sent at all: each is folded into the nearer
-   diagonal, so a sideways wobble curves instead of pirouetting.
+   The centre button offers a one-thumb mode anyway. That one is not an
+   analogue stick at all but a digital direction pad: a direction is a sector
+   the finger is in rather than a position it has to hold, so there is no
+   wobble to fold away and all nine directions — the two spins included — are
+   reachable and stay put. What the pad cannot give is a throw to measure, so
+   its speed comes from the speed button beside the mode button.
 
    Note that "C" the colour button and "C,0" the centred sticks are different
    commands; the micro:bit tells them apart by the comma, so no action command
@@ -409,9 +492,15 @@ const PUMP_MS      = 100;   // heartbeat tick and retry after a failed write
 
 const STOP = "C,0";         // sticks home — the one motion command that stops
 
-/* The keyboard has no throw to measure, so a key press drives at a fixed
-   push: brisk enough to be useful, short of full tilt. */
-const KEY_SPEED = 70;
+/* Neither the keyboard nor the direction pad has a throw to measure, so their
+   speed is picked rather than pushed. Three steps is all a child needs: gentle
+   enough to nose around a table, brisk, and flat out. The middle one is the
+   default — brisk enough to be useful, short of full tilt. */
+const SPEED_LEVELS = [40, 70, 100];
+const DEFAULT_SPEED = 70;
+
+/* Which speed the driver picked last, remembered between visits. */
+const SPEED_KEY = "carjoystick.speed";
 
 const IDLE_GLYPH = "ᛒ";
 const LIVE_GLYPH = "✓";
@@ -444,6 +533,25 @@ const ARC_SPREAD = 0.966;
    does — adjacent centres on a 120° triangle are radius * sqrt(3) apart. */
 const CLUSTER_ANGLES = { A: 210, B: 330, C: 90 };
 const CLUSTER_BUTTON_RATIO = 0.34;
+
+/* The direction pad's eight sectors, 45° each, indexed by the finger's angle
+   rounded to the nearest eighth turn: index 0 is due east and they run
+   anticlockwise from there, because that is the way atan2 counts. */
+const PAD_SECTORS = ["E", "NE", "N", "NW", "W", "SW", "S", "SE"];
+
+/* How far out of the middle the finger has to be before the pad names a
+   direction at all, as a fraction of its radius. Big enough that resting a
+   thumb in the centre is not a command, small enough that it is never a fight
+   to get out of. */
+const PAD_DEAD_ZONE = 0.22;
+
+/* The arrows, as fractions of the pad's diameter: how big each triangle is and
+   how far its centre sits from the pad's. */
+const PAD_ARROW_SIZE = 0.17;
+const PAD_ARROW_REACH = 0.31;
+
+/* Which way each arrow points, as a rotation from "up". */
+const PAD_ARROW_ANGLES = { N: 0, E: 90, S: 180, W: 270 };
 
 const DIRECTIONS = new Set(["UP", "DOWN", "LEFT", "RIGHT"]);
 
@@ -496,9 +604,11 @@ class CarController {
         this.logToggle       = document.getElementById("log-toggle");
         this.leftWell        = document.getElementById("stick-left");
         this.rightWell       = document.getElementById("stick-right");
+        this.dpad            = document.getElementById("dpad");
         this.arc             = document.getElementById("arc");
         this.readout         = document.getElementById("readout");
         this.modeButton      = document.getElementById("stick-mode");
+        this.speedButton     = document.getElementById("speed");
         this.logger          = new Logger(document.getElementById("log"));
 
         /* ---- Bluetooth ---- */
@@ -530,11 +640,15 @@ class CarController {
         this.rightJoystick = null;
         this.stickSize     = 0;       // so a resize can skip a rebuild
 
-        /* One stick or two. With one, the left stick steers on both axes and
-           the right one is gone, A/B/C staying behind as a cluster. */
+        /* One control or two. With one, the left stick is replaced by the
+           direction pad and the right stick is gone, A/B/C staying behind as a
+           cluster. */
         this.singleStick   = CarController.savedMode();
         this.left  = { direction: "C", speed: 0 };
         this.right = { direction: "C", speed: 0 };
+        this.padDirection = "C";      // where the direction pad is pointing
+        this.padPointer   = null;     // the finger the pad is following, if any
+        this.speed = CarController.savedSpeed();
         this.held  = new Set();       // arrow/WASD keys currently down
     }
 
@@ -542,7 +656,9 @@ class CarController {
 
     init() {
         this.showMode();
+        this.showSpeed();
         this.buildSticks();
+        this.bindPad();
         this.bindControls();
         this.bindKeyboard();
         this.bindWindow();
@@ -570,36 +686,57 @@ class CarController {
        axisOnlyY / axisOnlyX are joy.js's own: they pin the other axis to the
        centre, so getCardinalDirection can only ever answer N/S/C on the left
        and E/W/C on the right. That is what makes an accidental spin impossible
-       — a sideways wobble on the left stick moves nothing at all. */
+       — a sideways wobble on the left stick moves nothing at all.
+
+       In the single-control mode neither stick is built at all: the left-hand
+       side is the direction pad, which is plain DOM and only needs sizing. */
     buildSticks() {
         const size = this.stickSizeFor();
-        if (this.leftJoystick && size === this.stickSize) return;
+        if (size === this.stickSize) return;
 
         if (this.leftJoystick) this.leftJoystick.Destroy();
         if (this.rightJoystick) this.rightJoystick.Destroy();
+        this.leftJoystick = null;
         this.rightJoystick = null;
 
         this.stickSize = size;
 
-        /* With one stick it has to reach all eight directions, so its axis lock
-           comes off; with two, each keeps its own axis. */
-        this.leftJoystick = this.buildStick("stick-left", this.leftWell, size,
-            this.singleStick ? {} : { axisOnlyY: true },
-            status => this.onStickMoved("left", status));
-
-        this.leftWell.setAttribute("aria-label", this.singleStick
-            ? "Stick: steering, forward and reverse"
-            : "Left stick: forward and reverse");
-
+        this.leftWell.hidden = this.singleStick;
+        this.dpad.hidden = !this.singleStick;
         this.rightWell.style.display = this.singleStick ? "none" : "";
-        if (!this.singleStick) {
-            this.rightJoystick = this.buildStick("stick-right", this.rightWell, size, {
-                axisOnlyX: true
-            }, status => this.onStickMoved("right", status));
+
+        if (this.singleStick) {
+            this.layOutPad(size);
+        } else {
+            this.leftJoystick = this.buildStick("stick-left", this.leftWell, size,
+                { axisOnlyY: true }, status => this.onStickMoved("left", status));
+            this.rightJoystick = this.buildStick("stick-right", this.rightWell, size,
+                { axisOnlyX: true }, status => this.onStickMoved("right", status));
         }
 
         this.layOutArc(size);
         this.showSticks();
+    }
+
+    /* The pad is drawn entirely in CSS, so this only has to size it: the plate
+       to the same diameter a stick would have had, and each arrow rotated out
+       from the centre along the direction it stands for. The rotation happens
+       before the outward shift, so `translateY(-reach)` moves each triangle the
+       way it is already pointing. */
+    layOutPad(size) {
+        this.dpad.style.width = size + "px";
+        this.dpad.style.height = size + "px";
+
+        const arrow = Math.round(size * PAD_ARROW_SIZE);
+        const reach = Math.round(size * PAD_ARROW_REACH);
+
+        this.dpad.querySelectorAll(".dpad-arrow").forEach(element => {
+            element.style.width = arrow + "px";
+            element.style.height = arrow + "px";
+            element.style.transform =
+                "translate(-50%, -50%) rotate(" +
+                PAD_ARROW_ANGLES[element.dataset.axis] + "deg) translateY(-" + reach + "px)";
+        });
     }
 
     buildStick(id, well, size, axis, onMove) {
@@ -713,9 +850,7 @@ class CarController {
      * with one axis pinned it is just that axis, so no capping is needed.
      */
     onStickMoved(side, status) {
-        const direction = this.singleStick
-            ? CarController.curveOnly(status.cardinalDirection, status.y)
-            : status.cardinalDirection;
+        const direction = status.cardinalDirection;
         const speed = direction === "C"
             ? 0
             : Math.min(100, Math.round(Math.hypot(Number(status.x), Number(status.y))));
@@ -730,6 +865,113 @@ class CarController {
         const live = command !== STOP;
         this.readout.textContent = command.replace(",", " · ");
         this.readout.classList.toggle("live", live);
+        this.showPad();
+    }
+
+    /* --------------------------- Direction pad ---------------------------- */
+
+    /* One finger owns the pad at a time, and it keeps it until it lifts: the
+       capture is what lets a thumb slide from "up" into the corner and have the
+       command follow it, instead of the gesture being dropped the moment it
+       leaves the triangle it started on. */
+    bindPad() {
+        this.dpad.addEventListener("pointerdown", event => {
+            event.preventDefault();
+            if (this.padPointer !== null) return;   // a second finger changes nothing
+            this.padPointer = event.pointerId;
+
+            /* Capture is what makes the slide work, but it is not what makes the
+               pad work: if the browser refuses it the press must still steer,
+               so it is taken separately from the aim below. */
+            try { this.dpad.setPointerCapture(event.pointerId); }
+            catch (error) { /* no slide past the rim, but the press still counts */ }
+
+            CarController.buzz(12);
+            this.aimPad(event);
+        });
+
+        this.dpad.addEventListener("pointermove", event => {
+            if (event.pointerId === this.padPointer) this.aimPad(event);
+        });
+
+        ["pointerup", "pointercancel"].forEach(type =>
+            this.dpad.addEventListener(type, event => {
+                if (event.pointerId !== this.padPointer) return;
+                this.padPointer = null;
+                this.setPad("C");
+            })
+        );
+
+        this.dpad.addEventListener("contextmenu", event => event.preventDefault());
+    }
+
+    /* Where the finger is, as one of the eight directions. Only the angle
+       matters, so a finger dragged outside the pad still steers — which is the
+       kinder behaviour when a thumb overshoots the rim mid-corner. */
+    aimPad(event) {
+        const rect = this.dpad.getBoundingClientRect();
+        const x = event.clientX - rect.left - rect.width / 2;
+        const y = rect.height / 2 - (event.clientY - rect.top);   // up positive
+        this.setPad(CarController.sectorAt(x, y, Math.min(rect.width, rect.height) / 2));
+    }
+
+    /** Which sector (x, y) falls in, measured from the centre of a pad of
+     *  radius `radius`. "C" while the finger is still in the dead zone. */
+    static sectorAt(x, y, radius) {
+        if (Math.hypot(x, y) < radius * PAD_DEAD_ZONE) return "C";
+
+        /* An eighth of a turn is PI/4, so the angle over that, rounded, is the
+           sector index — negative below the axis, hence the wrap. */
+        const eighth = Math.round(Math.atan2(y, x) / (Math.PI / 4));
+        return PAD_SECTORS[(eighth + 8) % 8];
+    }
+
+    setPad(direction) {
+        if (direction === this.padDirection) return;
+        this.padDirection = direction;
+        this.showSticks();
+        this.setMotion(this.motionCommand());
+    }
+
+    /* Both arrows light on a diagonal, which is what says NE is one command and
+       not a near miss between two. */
+    showPad() {
+        this.dpad.querySelectorAll(".dpad-arrow").forEach(element => {
+            element.classList.toggle("on",
+                this.padDirection.indexOf(element.dataset.axis) >= 0);
+        });
+    }
+
+    /* ------------------------------- Speed -------------------------------- */
+
+    static savedSpeed() {
+        try {
+            const saved = Number(localStorage.getItem(SPEED_KEY));
+            return SPEED_LEVELS.indexOf(saved) >= 0 ? saved : DEFAULT_SPEED;
+        } catch (error) { return DEFAULT_SPEED; }
+    }
+
+    /* Round-robin through the three steps. Changing speed mid-drive takes
+       effect at once rather than waiting for the finger to lift, so the button
+       can be used to ease off while already moving. */
+    cycleSpeed() {
+        const next = (SPEED_LEVELS.indexOf(this.speed) + 1) % SPEED_LEVELS.length;
+        this.speed = SPEED_LEVELS[next];
+        try { localStorage.setItem(SPEED_KEY, String(this.speed)); }
+        catch (error) { /* the speed still works, it just won't be remembered */ }
+
+        this.showSpeed();
+        this.showSticks();
+        this.setMotion(this.motionCommand());
+        CarController.buzz(12);
+    }
+
+    showSpeed() {
+        this.speedButton.textContent = String(this.speed);
+        this.speedButton.title = "Speed " + this.speed + "% — tap to change";
+        /* With two sticks the throw is the throttle, so there is nothing here
+           to set: the button only belongs to the pad. */
+        this.speedButton.hidden = !this.singleStick;
     }
 
     /* ----------------------------- Stick mode ----------------------------- */
@@ -748,21 +990,22 @@ class CarController {
         } catch (error) { /* the mode still works, it just won't be remembered */ }
 
         /* Stop before rebuilding: the car must not be left driving on an order
-           given by a stick that is about to disappear. */
+           given by a control that is about to disappear. */
         this.centreSticks();
         this.setMotion(STOP);
 
         this.stickSize = 0;   // the size hasn't changed, so force the rebuild
         this.buildSticks();
         this.showMode();
+        this.showSpeed();
         CarController.buzz(12);
     }
 
     showMode() {
         this.modeButton.textContent = this.singleStick ? "1" : "2";
         this.modeButton.title = this.singleStick
-            ? "One stick — tap for two"
-            : "Two sticks — tap for one";
+            ? "Direction pad — tap for two sticks"
+            : "Two sticks — tap for the direction pad";
     }
 
     /* ------------------------------ Bindings ------------------------------ */
@@ -774,6 +1017,7 @@ class CarController {
 
         this.bluetoothButton.addEventListener("click", () => this.toggleConnection());
         this.modeButton.addEventListener("click", () => this.toggleStickMode());
+        this.speedButton.addEventListener("click", () => this.cycleSpeed());
 
         document.querySelectorAll("[data-command]").forEach(button => {
             const command = button.dataset.command;
@@ -1095,37 +1339,39 @@ class CarController {
 
     /* --------------------------- Press handling --------------------------- */
 
-    /* The sticks have the wheel while either is off centre; the keys take over
-       only once both are home, so letting go of a stick hands a still-held key
-       back its direction instead of stopping the car.
+    /* The on-screen control has the wheel while it is off centre; the keys take
+       over only once it is home, so letting go of a stick or the pad hands a
+       still-held key back its direction instead of stopping the car.
 
-       Speed comes from the left stick whenever it is driving — it is the one
-       that decides how fast the car goes. Only when it is home does the right
-       stick set the pace, which is what gives a spin in place its own throttle
-       instead of a fixed rate. */
+       With two sticks, speed comes from the left one whenever it is driving —
+       it is the one that decides how fast the car goes. Only when it is home
+       does the right stick set the pace, which is what gives a spin in place
+       its own throttle instead of a fixed rate. The pad and the keyboard have
+       no throw at all, so both take the speed the driver picked. */
     motionCommand() {
-        /* One stick names the whole direction by itself, diagonals included, so
+        /* The pad names the whole direction by itself, diagonals included, so
            there is nothing to combine — combine() only knows single axis names
            and would read "NE" as no vertical at all. */
         if (this.singleStick) {
-            if (this.left.direction !== "C") {
-                return this.left.direction + "," + this.left.speed;
+            if (this.padDirection !== "C") {
+                return this.padDirection + "," + this.speed;
             }
-            const [vertical, horizontal] = CarController.axesFor(this.held);
-            const keyed = CarController.curveOnly(
-                CarController.combine(vertical, horizontal),
-                vertical === "S" ? -1 : 1);
-            return keyed === "C" ? STOP : keyed + "," + KEY_SPEED;
+            return this.keyedCommand();
         }
 
         const direction = CarController.combine(this.left.direction, this.right.direction);
-        if (direction === "C") {
-            const keyed = CarController.combine(...CarController.axesFor(this.held));
-            return keyed === "C" ? STOP : keyed + "," + KEY_SPEED;
-        }
+        if (direction === "C") return this.keyedCommand();
 
         const speed = this.left.direction !== "C" ? this.left.speed : this.right.speed;
         return direction + "," + speed;
+    }
+
+    /* What the held keys alone add up to. Unlike the two sticks, the keyboard
+       can ask for E and W — a spin in place — directly, which is also what the
+       pad's own left and right do. */
+    keyedCommand() {
+        const keyed = CarController.combine(...CarController.axesFor(this.held));
+        return keyed === "C" ? STOP : keyed + "," + this.speed;
     }
 
     /* The one place a direction name is built. Both steering sources — the two
@@ -1136,16 +1382,6 @@ class CarController {
         const north = vertical === "N" || vertical === "S" ? vertical : "";
         const east  = horizontal === "E" || horizontal === "W" ? horizontal : "";
         return (north + east) || "C";
-    }
-
-    /* E and W spin the car on the spot. With two sticks that takes a deliberate
-       push on the one stick that can ask for it; with a single stick they sit a
-       sideways wobble away from every other direction, so in that mode they are
-       folded into the nearer diagonal instead. `y` is the vertical push (joy.js
-       gives it positive upwards); dead level counts as forward. */
-    static curveOnly(direction, y) {
-        if (direction !== "E" && direction !== "W") return direction;
-        return (Number(y) >= 0 ? "N" : "S") + direction;
     }
 
     /* Held keys, reduced to the same pair of axis names a stick would give. */
@@ -1182,8 +1418,9 @@ class CarController {
     }
 
     /* joy.js only recentres on a pointer release, which never arrives if the tab
-       is hidden mid-drag, so both sticks are centred here too rather than
-       leaving the car with a standing order to drive. */
+       is hidden mid-drag — and the pad has the same hole — so every control is
+       centred here too rather than leaving the car with a standing order to
+       drive. */
     releaseAll() {
         this.centreSticks();
         this.setMotion(STOP);
@@ -1199,6 +1436,16 @@ class CarController {
         this.held.clear();
         this.left  = { direction: "C", speed: 0 };
         this.right = { direction: "C", speed: 0 };
+        this.padDirection = "C";
+
+        /* Hand the finger back as well: without this the pad would keep the
+           capture and go on steering from a gesture the page has disowned. */
+        if (this.padPointer !== null) {
+            try { this.dpad.releasePointerCapture(this.padPointer); }
+            catch (error) { /* already gone with the pointer */ }
+            this.padPointer = null;
+        }
+
         this.showSticks();
     }
 

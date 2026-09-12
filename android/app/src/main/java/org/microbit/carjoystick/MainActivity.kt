@@ -164,6 +164,8 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
     val devices by controller.devices.collectAsStateWithLifecycle()
     val picking by controller.picking.collectAsStateWithLifecycle()
     val singleStick by controller.singleStick.collectAsStateWithLifecycle()
+    val pad by controller.pad.collectAsStateWithLifecycle()
+    val speed by controller.speed.collectAsStateWithLifecycle()
 
     /* Leaving the app must not leave a button stuck down. */
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -230,14 +232,27 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Joystick(
-                        diameter = stickDiameter,
-                        axis = if (singleStick) Axis.BOTH else Axis.VERTICAL,
-                        onMove = { direction, speed ->
-                            controller.onStickMoved(Side.LEFT, direction, speed)
-                        },
-                        foldSpin = singleStick,
-                    )
+                    if (singleStick) {
+                        DirectionPad(
+                            diameter = stickDiameter,
+                            direction = pad,
+                            /* A tick on every new direction, the way a real
+                               D-pad clicks — but not on the release, which is
+                               the finger leaving rather than a command. */
+                            onAim = { direction ->
+                                if (direction != "C" && direction != pad) vibrate(context)
+                                controller.onPadMoved(direction)
+                            },
+                        )
+                    } else {
+                        Joystick(
+                            diameter = stickDiameter,
+                            axis = Axis.VERTICAL,
+                            onMove = { direction, moved ->
+                                controller.onStickMoved(Side.LEFT, direction, moved)
+                            },
+                        )
+                    }
 
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -264,11 +279,26 @@ fun ControllerScreen(controller: CarController, onConnectRequest: () -> Unit) {
 
                         StickReadout(command = readout, scale = scale)
 
-                        ModeButton(
-                            singleStick = singleStick,
-                            scale = scale,
-                            onClick = { controller.toggleStickMode(); vibrate(context) },
-                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy((10 * scale).dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            ModeButton(
+                                singleStick = singleStick,
+                                scale = scale,
+                                onClick = { controller.toggleStickMode(); vibrate(context) },
+                            )
+
+                            /* Only the pad needs a throttle: with two sticks the
+                               throw is the throttle. */
+                            if (singleStick) {
+                                SpeedButton(
+                                    speed = speed,
+                                    scale = scale,
+                                    onClick = { controller.cycleSpeed(); vibrate(context) },
+                                )
+                            }
+                        }
                     }
 
                     if (singleStick) {

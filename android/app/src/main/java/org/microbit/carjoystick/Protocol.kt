@@ -1,6 +1,8 @@
 package org.microbit.carjoystick
 
 import java.util.UUID
+import kotlin.math.PI
+import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
@@ -33,13 +35,15 @@ object Uart {
  * Two sticks, each locked to one axis, produce those nine directions between
  * them: the left one gives N, S or C and the right one E, W or C, and the two
  * names are concatenated. Splitting them across two thumbs is the whole point
- * — with a single pad, E and NE are neighbouring regions and a wobble turns a
- * curve into a spin.
+ * — on one analogue stick, E and NE are neighbouring regions and a wobble turns
+ * a curve into a spin.
  *
- * The centre button offers the single pad anyway, for a driver who would rather
- * steer with one thumb. There the left stick reads both axes and E and W — the
- * two spins — are never sent at all: each is folded into the nearer diagonal by
- * [Protocol.curveOnly], so a sideways wobble curves instead of pirouetting.
+ * The centre button offers a one-thumb mode anyway. That one is not an analogue
+ * stick at all but a digital direction pad: a direction is a sector the finger
+ * is in rather than a position it has to hold, so there is no wobble to fold
+ * away and all nine directions — the two spins included — are reachable and stay
+ * put. What the pad cannot give is a throw to measure, so its speed comes from
+ * the speed button beside the mode button.
  *
  * Note that "C" the colour button and "C,0" the centred sticks are different
  * commands; the micro:bit tells them apart by the comma, so no action command
@@ -53,9 +57,39 @@ object Protocol {
     /** Stick home: the one motion command that means "stop". */
     const val STOP = "C,0"
 
-    /** A key or gamepad button has no throw to measure, so it drives at a fixed
-     *  push: brisk enough to be useful, short of full tilt. */
-    const val KEY_SPEED = 70
+    /** Neither the keyboard nor the direction pad has a throw to measure, so
+     *  their speed is picked rather than pushed. Three steps is all a child
+     *  needs: gentle enough to nose around a table, brisk, and flat out. The
+     *  middle one is the default — brisk enough to be useful, short of full
+     *  tilt. */
+    val SPEED_LEVELS = listOf(40, 70, 100)
+    const val DEFAULT_SPEED = 70
+
+    /** The direction pad's eight sectors, 45° each, indexed by the finger's
+     *  angle rounded to the nearest eighth turn: index 0 is due east and they
+     *  run anticlockwise from there, because that is the way atan2 counts. */
+    private val PAD_SECTORS = listOf("E", "NE", "N", "NW", "W", "SW", "S", "SE")
+
+    /** How far out of the middle the finger has to be before the pad names a
+     *  direction at all, as a fraction of its radius. Big enough that resting a
+     *  thumb in the centre is not a command, small enough that it is never a
+     *  fight to get out of. */
+    const val PAD_DEAD_ZONE = 0.22f
+
+    /**
+     * Which sector (x, y) falls in, measured from the centre of a pad of radius
+     * [radius], with y positive upwards. "C" while the finger is still in the
+     * dead zone. Only the angle matters outside it, so a finger dragged past the
+     * rim still steers — the kinder behaviour when a thumb overshoots mid-corner.
+     */
+    fun sectorAt(x: Float, y: Float, radius: Float): String {
+        if (hypot(x, y) < radius * PAD_DEAD_ZONE) return "C"
+
+        /* An eighth of a turn is PI/4, so the angle over that, rounded, is the
+           sector index — negative below the axis, hence the wrap. */
+        val eighth = (atan2(y, x) / (PI / 4f)).roundToInt()
+        return PAD_SECTORS[((eighth % 8) + 8) % 8]
+    }
 
     /** How far an axis must be pushed before it names a direction, as a fraction
      *  of the full throw. This is joy.js's rule, so the two controllers agree on
@@ -79,17 +113,6 @@ object Protocol {
         val horizontal = if (x > DEAD_ZONE) "E" else if (x < -DEAD_ZONE) "W" else ""
         return (vertical + horizontal).ifEmpty { "C" }
     }
-
-    /**
-     * E and W spin the car on the spot. With two sticks that takes a deliberate
-     * push on the one stick that can ask for it; with a single stick they sit a
-     * sideways wobble away from every other direction, so in that mode they are
-     * folded into the nearer diagonal instead. `y` is the vertical push,
-     * positive upwards; dead level counts as forward.
-     */
-    fun curveOnly(direction: String, y: Float): String =
-        if (direction != "E" && direction != "W") direction
-        else (if (y >= 0f) "N" else "S") + direction
 
     /**
      * How hard the stick is pushed, 0..100: its distance from the centre. Each

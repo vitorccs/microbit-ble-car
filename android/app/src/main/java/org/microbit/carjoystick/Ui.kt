@@ -45,10 +45,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
@@ -132,9 +136,8 @@ private fun lighten(color: Color): Color = Color(
 
 /* =============================== Joystick ================================ */
 
-/** Which way a stick is allowed to move. The other axis is pinned to centre;
- *  [BOTH] pins neither, for the single-stick mode. */
-enum class Axis { VERTICAL, HORIZONTAL, BOTH }
+/** Which way a stick is allowed to move. The other axis is pinned to centre. */
+enum class Axis { VERTICAL, HORIZONTAL }
 
 /* Proportions of the control's overall size. They mirror joy.js's drawing, so
    the two controllers feel the same under the thumb — in particular the throw,
@@ -159,32 +162,23 @@ fun Joystick(
     diameter: Dp,
     axis: Axis,
     onMove: (direction: String, speed: Int) -> Unit,
-    foldSpin: Boolean = false,
 ) {
     val report by rememberUpdatedState(onMove)
     var knob by remember { mutableStateOf(Offset.Zero) }   // from the centre, in px
     val throwPx = with(LocalDensity.current) { diameter.toPx() } * THROW_RATIO
 
     /* The locked axis is pinned to zero before anything else looks at it, so the
-       knob, the direction and the speed all agree that it never moved. With no
-       axis locked the throw is capped as a circle rather than per axis, or the
-       corners would reach further than straight ahead. */
+       knob, the direction and the speed all agree that it never moved. */
     fun moveTo(raw: Offset) {
-        val offset = if (axis == Axis.BOTH) {
-            val reach = raw.getDistance()
-            if (reach > throwPx) raw * (throwPx / reach) else raw
-        } else {
-            Offset(
-                if (axis == Axis.VERTICAL) 0f else raw.x.coerceIn(-throwPx, throwPx),
-                if (axis == Axis.HORIZONTAL) 0f else raw.y.coerceIn(-throwPx, throwPx),
-            )
-        }
+        val offset = Offset(
+            if (axis == Axis.VERTICAL) 0f else raw.x.coerceIn(-throwPx, throwPx),
+            if (axis == Axis.HORIZONTAL) 0f else raw.y.coerceIn(-throwPx, throwPx),
+        )
         knob = offset
 
         val x = offset.x / throwPx
         val y = -offset.y / throwPx   // screen y grows downwards; the stick's does not
-        val named = Protocol.directionAt(x, y)
-        val direction = if (foldSpin) Protocol.curveOnly(named, y) else named
+        val direction = Protocol.directionAt(x, y)
         report(direction, if (direction == "C") 0 else Protocol.speedAt(x, y))
     }
 
@@ -196,7 +190,7 @@ fun Joystick(
             /* Keyed on the two things `moveTo` reads from the composition:
                rekeying on every recomposition would drop the drag the movement
                itself caused. */
-            .pointerInput(diameter, axis, foldSpin) {
+            .pointerInput(diameter, axis) {
                 val centre = Offset(size.width / 2f, size.height / 2f)
                 detectDragGestures(
                     onDragStart = { position -> moveTo(position - centre) },
@@ -259,6 +253,119 @@ fun Joystick(
                 center = knobCentre,
                 style = Stroke(width = 2.dp.toPx()),
             )
+        }
+    }
+}
+
+/* ============================= Direction pad ============================= */
+
+/* Proportions of the pad's overall size: the cross plate's two bars, then each
+   arrow's own size and how far its centre sits from the pad's. They mirror the
+   web page's CSS, so the two controllers look and feel the same. */
+private const val PAD_BAR_LONG = 0.86f
+private const val PAD_BAR_SHORT = 0.32f
+private const val PAD_ARROW_SIZE = 0.17f
+private const val PAD_ARROW_REACH = 0.31f
+
+/** Which way each arrow points, as a rotation from "up". */
+private val PAD_ARROWS = listOf("N" to 0f, "E" to 90f, "S" to 180f, "W" to 270f)
+
+/**
+ * The direction pad, which replaces the left stick in the single-control mode.
+ * It is a digital eight-way pad, not four separate buttons: the whole plate
+ * tracks one finger and the sector it lands in names the direction, so a thumb
+ * can slide from "up" into the corner and get NE without ever having to press
+ * two buttons at once. Four buttons could not do that with one thumb, and
+ * two-thumb diagonals are exactly what this mode is meant to avoid.
+ *
+ * The arrows are the labels for those sectors, and they light up to say which
+ * way the car has been told to go — both of them on a diagonal.
+ */
+@Composable
+fun DirectionPad(
+    diameter: Dp,
+    direction: String,
+    onAim: (String) -> Unit,
+) {
+    val report by rememberUpdatedState(onAim)
+
+    Box(
+        Modifier
+            .size(diameter)
+            .clip(CircleShape)
+            .background(Palette.panelDark)
+            /* Not detectDragGestures: that one waits for touch slop before it
+               says anything, and a tap held still is the pad's main gesture. */
+            .pointerInput(diameter) {
+                val centre = Offset(size.width / 2f, size.height / 2f)
+                val radius = minOf(size.width, size.height) / 2f
+
+                fun aim(position: Offset) {
+                    /* The pad counts y upwards; the screen counts it down. */
+                    report(Protocol.sectorAt(position.x - centre.x, centre.y - position.y, radius))
+                }
+
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    aim(down.position)
+
+                    /* The gesture stays with this finger until it lifts, so a
+                       thumb that slides past the rim mid-corner keeps steering
+                       instead of having its command dropped. */
+                    var pressed = true
+                    while (pressed) {
+                        val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id }
+                        if (change == null) {
+                            pressed = false
+                        } else {
+                            aim(change.position)
+                            change.consume()
+                            pressed = change.pressed
+                        }
+                    }
+                    report("C")
+                }
+            },
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val centre = Offset(size.width / 2f, size.height / 2f)
+            val span = size.minDimension
+            val long = span * PAD_BAR_LONG
+            val short = span * PAD_BAR_SHORT
+            val corner = CornerRadius(14.dp.toPx())
+
+            /* The cross plate: purely the shape of a D-pad. The sectors are
+               worked out from the angle, not from these bars. */
+            listOf(Size(long, short), Size(short, long)).forEach { bar ->
+                drawRoundRect(
+                    color = Palette.padPlate,
+                    topLeft = Offset(centre.x - bar.width / 2, centre.y - bar.height / 2),
+                    size = bar,
+                    cornerRadius = corner,
+                )
+            }
+
+            val arrow = span * PAD_ARROW_SIZE
+            val reach = span * PAD_ARROW_REACH
+
+            PAD_ARROWS.forEach { (axis, degrees) ->
+                rotate(degrees, centre) {
+                    /* Drawn pointing up and rotated into place, so one path
+                       shape serves all four. */
+                    val path = Path().apply {
+                        moveTo(centre.x, centre.y - reach - arrow / 2)
+                        lineTo(centre.x + arrow / 2, centre.y - reach + arrow / 2)
+                        lineTo(centre.x - arrow / 2, centre.y - reach + arrow / 2)
+                        close()
+                    }
+                    drawPath(
+                        path = path,
+                        /* Both arrows light on a diagonal, which is what says NE
+                           is one command and not a near miss between two. */
+                        color = if (axis in direction) Palette.blue else Palette.padArrow,
+                    )
+                }
+            }
         }
     }
 }
@@ -484,17 +591,56 @@ fun BluetoothButton(
     }
 }
 
-/* =============================== Mode button ============================= */
+/* ============================ Setting buttons ============================ */
 
 /**
- * One stick or two. Deliberately smaller and duller than the Bluetooth button:
- * it is a setting, not the thing you came here to press. The label is the
- * number of sticks it is showing right now.
+ * One control or two. Deliberately smaller and duller than the Bluetooth
+ * button: it is a setting, not the thing you came here to press. The label is
+ * the number of controls it is showing right now.
  */
 @Composable
 fun ModeButton(
     singleStick: Boolean,
     scale: Float,
+    onClick: () -> Unit,
+) {
+    SettingButton(
+        label = if (singleStick) "1" else "2",
+        colour = Palette.text,
+        scale = scale,
+        fontScale = 19f,
+        onClick = onClick,
+    )
+}
+
+/**
+ * How fast the pad drives, in percent, cycling through [Protocol.SPEED_LEVELS].
+ * It only shows in the single-control mode: with two sticks the throw is the
+ * throttle, so there would be nothing here to set. Three digits where the mode
+ * button has one, so a size down; the blue says this one is about how the car
+ * moves rather than how it is laid out.
+ */
+@Composable
+fun SpeedButton(
+    speed: Int,
+    scale: Float,
+    onClick: () -> Unit,
+) {
+    SettingButton(
+        label = speed.toString(),
+        colour = Palette.speedText,
+        scale = scale,
+        fontScale = 14f,
+        onClick = onClick,
+    )
+}
+
+@Composable
+private fun SettingButton(
+    label: String,
+    colour: Color,
+    scale: Float,
+    fontScale: Float,
     onClick: () -> Unit,
 ) {
     Box(
@@ -507,9 +653,9 @@ fun ModeButton(
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            text = if (singleStick) "1" else "2",
-            color = Palette.text,
-            fontSize = (19 * scale).sp,
+            text = label,
+            color = colour,
+            fontSize = (fontScale * scale).sp,
             fontWeight = FontWeight.Bold,
         )
     }

@@ -28,9 +28,10 @@ data class Status(val text: String, val isError: Boolean = false)
 
 private const val LOG_LIMIT = 80  // lines kept in the diagnostic panel
 
-/* The one setting worth outliving the process. */
+/* The two settings worth outliving the process. */
 private const val PREFS_NAME = "carjoystick"
 private const val SINGLE_STICK_KEY = "singleStick"
+private const val SPEED_KEY = "speed"
 
 /**
  * The controller owns every piece of state the UI reads and is the only place
@@ -58,13 +59,26 @@ class CarController(application: Application) : AndroidViewModel(application) {
     private val _left = MutableStateFlow(Stick())
     private val _right = MutableStateFlow(Stick())
 
-    /** One stick or two. With one, the left stick steers on both axes and the
-     *  right one is gone, A, B and C staying behind as a cluster. Remembered
-     *  between runs, so the driver picks once. */
+    /** Where the direction pad is pointing: one of the nine names, or "C". It
+     *  replaces the left stick in the single-control mode. */
+    private val _pad = MutableStateFlow("C")
+    val pad: StateFlow<String> = _pad.asStateFlow()
+
+    /** One control or two. With one, the left stick becomes the direction pad
+     *  and the right one is gone, A, B and C staying behind as a cluster.
+     *  Remembered between runs, so the driver picks once. */
     private val _singleStick = MutableStateFlow(
         preferences.getBoolean(SINGLE_STICK_KEY, false),
     )
     val singleStick: StateFlow<Boolean> = _singleStick.asStateFlow()
+
+    /** How fast the pad and the keys drive, since neither has a throw to
+     *  measure. Remembered between runs alongside the mode. */
+    private val _speed = MutableStateFlow(
+        preferences.getInt(SPEED_KEY, Protocol.DEFAULT_SPEED)
+            .takeIf { it in Protocol.SPEED_LEVELS } ?: Protocol.DEFAULT_SPEED,
+    )
+    val speed: StateFlow<Int> = _speed.asStateFlow()
 
     /** What the sticks and keys currently add up to, for the on-screen readout. */
     private val _readout = MutableStateFlow(Protocol.STOP)
@@ -152,41 +166,49 @@ class CarController(application: Application) : AndroidViewModel(application) {
         steer()
     }
 
+    /** Called by the direction pad as the finger moves across it, and on lift
+     *  with "C". */
+    fun onPadMoved(direction: String) {
+        if (direction == _pad.value) return
+        _pad.value = direction
+        steer()
+    }
+
     /**
-     * The sticks have the wheel while either is off centre; the keys take over
-     * only once both are home, so letting go of a stick hands a still-held key
-     * back its direction instead of stopping the car.
+     * The on-screen control has the wheel while it is off centre; the keys take
+     * over only once it is home, so letting go of a stick or the pad hands a
+     * still-held key back its direction instead of stopping the car.
      *
-     * Speed comes from the left stick whenever it is driving — it is the one
-     * that decides how fast the car goes. Only when it is home does the right
-     * stick set the pace, which is what gives a spin in place its own throttle
-     * instead of a fixed rate.
+     * With two sticks, speed comes from the left one whenever it is driving —
+     * it is the one that decides how fast the car goes. Only when it is home
+     * does the right stick set the pace, which is what gives a spin in place its
+     * own throttle instead of a fixed rate. The pad and the keyboard have no
+     * throw at all, so both take the speed the driver picked.
      */
     private fun motionCommand(): String {
         val left = _left.value
         val right = _right.value
 
-        /* One stick names the whole direction by itself, diagonals included, so
+        /* The pad names the whole direction by itself, diagonals included, so
            there is nothing to combine — combine() only knows single axis names
            and would read "NE" as no vertical at all. */
         if (_singleStick.value) {
-            if (!left.isCentred) return Protocol.motion(left.direction, left.speed)
-
-            val (vertical, horizontal) = Protocol.axesFor(held)
-            val keyed = Protocol.curveOnly(
-                Protocol.combine(vertical, horizontal),
-                if (vertical == "S") -1f else 1f,
-            )
-            return Protocol.motion(keyed, Protocol.KEY_SPEED)
+            if (_pad.value != "C") return Protocol.motion(_pad.value, _speed.value)
+            return keyedCommand()
         }
 
         val direction = Protocol.combine(left.direction, right.direction)
-        if (direction == "C") {
-            val (vertical, horizontal) = Protocol.axesFor(held)
-            return Protocol.motion(Protocol.combine(vertical, horizontal), Protocol.KEY_SPEED)
-        }
+        if (direction == "C") return keyedCommand()
 
         return Protocol.motion(direction, if (!left.isCentred) left.speed else right.speed)
+    }
+
+    /** What the held keys alone add up to. Unlike the two sticks, the keyboard
+     *  can ask for E and W — a spin in place — directly, which is also what the
+     *  pad's own left and right do. */
+    private fun keyedCommand(): String {
+        val (vertical, horizontal) = Protocol.axesFor(held)
+        return Protocol.motion(Protocol.combine(vertical, horizontal), _speed.value)
     }
 
     /** Work out the new command, show it, and queue it. */
@@ -196,12 +218,23 @@ class CarController(application: Application) : AndroidViewModel(application) {
         setMotion(command)
     }
 
-    /** Swap between one stick and two. Everything stops first: the car must not
-     *  be left driving on an order given by a stick that is about to vanish. */
+    /** Swap between the direction pad and two sticks. Everything stops first:
+     *  the car must not be left driving on an order given by a control that is
+     *  about to vanish. */
     fun toggleStickMode() {
         releaseAll()
         _singleStick.value = !_singleStick.value
         preferences.edit().putBoolean(SINGLE_STICK_KEY, _singleStick.value).apply()
+    }
+
+    /** Round-robin through the three speed steps. Changing speed mid-drive takes
+     *  effect at once rather than waiting for the finger to lift, so the button
+     *  can be used to ease off while already moving. */
+    fun cycleSpeed() {
+        val next = (Protocol.SPEED_LEVELS.indexOf(_speed.value) + 1) % Protocol.SPEED_LEVELS.size
+        _speed.value = Protocol.SPEED_LEVELS[next]
+        preferences.edit().putInt(SPEED_KEY, _speed.value).apply()
+        steer()
     }
 
     /* ----------------------------- Connection ----------------------------- */
@@ -435,10 +468,15 @@ class CarController(application: Application) : AndroidViewModel(application) {
     }
 
     /** Leaving the app or losing focus must not leave the car with a standing
-     *  order to drive: a stick gets no release event when the app goes away, so
-     *  both are centred here rather than waiting for the watchdog. */
+     *  order to drive: a stick and the pad both get no release event when the
+     *  app goes away, so every control is centred here rather than waiting for
+     *  the watchdog. */
     fun releaseAll() {
-        if (held.isEmpty() && _left.value.isCentred && _right.value.isCentred) return
+        if (held.isEmpty() && _left.value.isCentred && _right.value.isCentred &&
+            _pad.value == "C"
+        ) {
+            return
+        }
         centreSticks()
         setMotion(Protocol.STOP)
     }
@@ -453,6 +491,7 @@ class CarController(application: Application) : AndroidViewModel(application) {
         held = emptySet()
         _left.value = Stick()
         _right.value = Stick()
+        _pad.value = "C"
         _readout.value = Protocol.STOP
     }
 
