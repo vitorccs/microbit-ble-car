@@ -1,0 +1,1477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#202124">
+<title>Micro:bit Car Controller</title>
+<style>
+    :root {
+        --bg: #202124;
+        --panel: #292b2f;
+        --panel-dark: #1a1b1e;
+        --text: #f5f5f5;
+        --muted: #a9adb5;
+        --blue: #4285f4;
+        --blue-dark: #2f6edb;
+        --red: #e74c3c;
+        --green: #34a853;
+        --purple: #8e5bd9;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        overscroll-behavior: none;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .controller {
+        width: 96vw;
+        height: 94vh;
+        max-height: 720px;
+        background: var(--panel);
+        border-radius: 42px;
+        box-shadow:
+            0 24px 60px rgba(0,0,0,.45),
+            inset 0 2px 0 rgba(255,255,255,.05);
+        /* Fluid, because a phone held in landscape has barely 350px of height
+           to give: fixed padding there costs more than the sticks can spare.
+           The extra room at the bottom is the legend's — it is positioned over
+           the panel, so without it a full-height stick would sit on the text. */
+        padding: clamp(12px, 5vh, 38px) clamp(16px, 3vw, 48px) clamp(18px, 6vh, 46px);
+        display: grid;
+        /* minmax(0, …) rather than a bare 1fr: the side columns must be free to
+           be narrower than the sticks inside them, because the script measures
+           a column to decide how big its stick may be. A bare 1fr floors at the
+           content width, so the measurement would chase its own tail. */
+        grid-template-columns: minmax(0, 1fr) 220px minmax(0, 1fr);
+        /* Stretch, not center: the script measures a column's height as well as
+           its width, and a centred grid item is only as tall as what is already
+           inside it — which is the stick, so the measurement would be circular. */
+        align-items: stretch;
+        gap: 20px;
+        position: relative;
+    }
+
+    /* The sticks hug the outer edges, as far apart as the panel allows: that is
+       where the thumbs are when the device is held in two hands. All the slack
+       therefore falls between each stick and the centre — which is exactly where
+       the right stick's button arc reaches into. */
+    .side {
+        display: flex;
+        align-items: center;
+    }
+
+    .side-left { justify-content: flex-start; }
+    .side-right { justify-content: flex-end; }
+
+    /* Analogue sticks. Each canvas is created by joy.js and sized to its well,
+       so the well needs a real pixel size before the stick is built — the script
+       sets it, along with the positions of the action buttons around the right
+       one. The left stick is locked to the vertical axis and the right one to
+       the horizontal, which is what keeps a forward push from ever becoming a
+       spin: the two are separate thumbs, not neighbouring halves of one pad. */
+    .stick-well {
+        position: relative;
+        border-radius: 50%;
+        background: var(--panel-dark);
+        box-shadow:
+            inset 0 4px 12px rgba(0,0,0,.5),
+            0 4px 10px rgba(0,0,0,.25);
+        touch-action: none;
+    }
+
+    .stick-well canvas { display: block; }
+
+    /* The direction pad, which replaces the left stick in the single-control
+       mode. It is a digital eight-way pad, not four separate buttons: the whole
+       plate tracks one finger and the sector it lands in names the direction,
+       so a thumb can slide from "up" into the corner and get NE without ever
+       having to press two buttons at once. Four buttons could not do that with
+       one thumb, and two-thumb diagonals are exactly what this mode is meant to
+       avoid. The arrows are the labels for those sectors, and they light up to
+       say which way the car has been told to go — both of them on a diagonal. */
+    .dpad {
+        position: relative;
+        border-radius: 50%;
+        background: var(--panel-dark);
+        box-shadow:
+            inset 0 4px 12px rgba(0,0,0,.5),
+            0 4px 10px rgba(0,0,0,.25);
+        touch-action: none;
+        cursor: pointer;
+    }
+
+    /* The cross plate: two rounded bars through the centre. Purely the shape of
+       a D-pad — the sectors are worked out from the angle, not from these. */
+    .dpad::before,
+    .dpad::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        background: #33363c;
+        border-radius: 14px;
+    }
+
+    .dpad::before { width: 86%; height: 32%; }
+    .dpad::after  { width: 32%; height: 86%; }
+
+    /* One triangle per axis, rotated outwards from the centre; the script sizes
+       and places them, because the pad's own size is only known then. */
+    .dpad-arrow {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        background: #6b6f78;
+        clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+        transition: background .08s;
+        pointer-events: none;   /* the plate reads the finger, not these */
+        /* The cross is drawn by ::after as well as ::before, and ::after paints
+           over its siblings; without this the vertical bar would bury the up
+           and down arrows. */
+        z-index: 1;
+    }
+
+    .dpad-arrow.on { background: var(--blue); }
+
+    /* Direction and speed as they go on the wire. It lives next to the status
+       line but is not the same thing: the status only moves when a command is
+       actually sent, so this is what proves the sticks work before pairing. */
+    .readout {
+        font-size: 12px;
+        letter-spacing: 1px;
+        font-weight: 700;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+    }
+
+    .readout.live { color: var(--blue); }
+
+    .action:focus-visible,
+    .bluetooth:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 3px;
+    }
+
+    /* A, B and C sit on an arc off the right stick's upper-left, where the right
+       thumb reaches by pivoting inwards — reaching outwards would go off the
+       edge of the device. The box is exactly the stick's size, existing only to
+       give the buttons a centre to measure from; they overflow it into the slack
+       between the stick and the panel's middle, which the script keeps clear.
+       Their size comes from the script too, in proportion to the stick — as does
+       the box's, which shrinks around a plain triangle of buttons when the
+       single-stick mode takes the right stick away. */
+    .arc {
+        position: relative;
+        flex: none;
+    }
+
+    .action {
+        position: absolute;
+        border-radius: 50%;
+        border: 0;
+        color: white;
+        font-weight: 800;
+        cursor: pointer;
+        box-shadow: inset 0 -5px 0 rgba(0,0,0,.25), 0 5px 9px rgba(0,0,0,.3);
+        transition: transform .05s;
+        touch-action: none;
+    }
+
+    .action.active {
+        transform: translateY(4px);
+        box-shadow: inset 0 -2px 0 rgba(0,0,0,.25), 0 2px 5px rgba(0,0,0,.3);
+    }
+
+    .a { background: #e84393; }
+    .b { background: #e74c3c; }
+    .c { background: #3498db; }
+
+    .center {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: clamp(8px, 3vh, 24px);
+    }
+
+    .brand {
+        text-align: center;
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: .5px;
+        color: #ddd;
+    }
+
+    .bluetooth {
+        /* Tied to the viewport height, like the sticks are: a fixed 160px would
+           swallow a landscape phone's screen. */
+        width: min(160px, 22vh);
+        height: min(160px, 22vh);
+        border: 0;
+        border-radius: 50%;
+        background: var(--blue);
+        color: white;
+        font-size: min(56px, 8vh);
+        line-height: 1;
+        cursor: pointer;
+        box-shadow:
+            inset 0 -8px 0 var(--blue-dark),
+            0 9px 18px rgba(0,0,0,.35);
+        transition: transform .08s, background .15s;
+    }
+
+    .bluetooth:hover { background: #4f91f7; }
+
+    .bluetooth:active {
+        transform: translateY(6px);
+        box-shadow: inset 0 -2px 0 var(--blue-dark), 0 3px 8px rgba(0,0,0,.3);
+    }
+
+    .bluetooth.connected {
+        background: var(--green);
+        box-shadow: inset 0 -8px 0 #24883f, 0 9px 18px rgba(0,0,0,.35);
+    }
+
+    .bluetooth.busy {
+        pointer-events: none;
+        animation: pulse 1s ease-in-out infinite;
+    }
+
+    @keyframes pulse { 50% { opacity: .45; } }
+
+    .settings {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+    }
+
+    /* One stick or two, and — when the pad is showing — how fast it drives.
+       Deliberately smaller and duller than the Bluetooth button: these are
+       settings, not the thing you came here to press. */
+    .mode {
+        width: min(64px, 9vh);
+        height: min(64px, 9vh);
+        border: 0;
+        border-radius: 50%;
+        background: #3a3d44;
+        color: var(--text);
+        font-size: min(24px, 3.4vh);
+        font-weight: 800;
+        line-height: 1;
+        cursor: pointer;
+        box-shadow:
+            inset 0 -4px 0 rgba(0,0,0,.4),
+            0 4px 9px rgba(0,0,0,.3);
+        transition: transform .08s, background .15s;
+    }
+
+    .mode:hover { background: #484c54; }
+
+    .mode:active {
+        transform: translateY(3px);
+        box-shadow: inset 0 -1px 0 rgba(0,0,0,.4), 0 2px 5px rgba(0,0,0,.3);
+    }
+
+    /* Three digits where the mode button has one, so a size down. The blue says
+       this one is about how the car moves rather than how it is laid out. */
+    .mode.speed {
+        font-size: min(17px, 2.6vh);
+        color: #cfe0ff;
+    }
+
+    /* Only the pad needs a throttle: with two sticks the throw is the throttle. */
+    .mode.speed[hidden] { display: none; }
+
+    .status {
+        text-align: center;
+        font-size: 13px;
+        color: var(--muted);
+        min-height: 38px;
+        line-height: 19px;
+    }
+
+    .status.error { color: #ff7b6e; }
+
+    .legend {
+        position: absolute;
+        bottom: 17px;
+        left: 0;
+        right: 0;
+        text-align: center;
+        color: #777b83;
+        font-size: 11px;
+    }
+
+    /* Diagnostic log */
+    .log-toggle {
+        position: absolute;
+        right: 22px;
+        bottom: 12px;
+        width: 24px;
+        height: 24px;
+        border: 0;
+        border-radius: 50%;
+        background: #35383e;
+        color: #8b9099;
+        font-size: 12px;
+        font-weight: 800;
+        cursor: pointer;
+    }
+
+    .log-toggle:hover { background: #43464d; color: var(--text); }
+
+    .log {
+        display: none;
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        max-height: 36vh;
+        overflow-y: auto;
+        margin: 0;
+        padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+        border-top: 1px solid #3a3d44;
+        background: rgba(16,17,20,.96);
+        color: #7ee2a8;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 11px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        user-select: text;
+        -webkit-user-select: text;
+        z-index: 10;
+    }
+
+    body.show-log .log { display: block; }
+
+    @media (max-width: 700px) {
+        .controller {
+            width: 98vw;
+            height: 96vh;
+            padding: 25px 18px;
+            grid-template-columns: minmax(0, 1fr) 120px minmax(0, 1fr);
+            gap: 5px;
+            border-radius: 28px;
+        }
+
+        /* The sticks and the arc are sized in pixels by the script, so they
+           are left alone here. */
+        .brand { font-size: 13px; }
+        .status { font-size: 11px; }
+        .legend { display: none; }
+    }
+</style>
+</head>
+
+<body>
+<main class="controller">
+    <section class="side side-left">
+        <div id="stick-left" class="stick-well" role="application"
+             aria-label="Left stick: forward and reverse"></div>
+        <div id="dpad" class="dpad" role="application" hidden
+             aria-label="Direction pad: up, down, left, right and the diagonals between them">
+            <div class="dpad-arrow" data-axis="N"></div>
+            <div class="dpad-arrow" data-axis="E"></div>
+            <div class="dpad-arrow" data-axis="S"></div>
+            <div class="dpad-arrow" data-axis="W"></div>
+        </div>
+    </section>
+
+    <section class="center">
+        <div class="brand">MICRO:BIT<br>CAR</div>
+        <button id="bluetooth" class="bluetooth" title="Connect to the micro:bit"
+                aria-label="Connect Bluetooth"><span id="bluetooth-label">ᛒ</span></button>
+        <div id="status" class="status" role="status" aria-live="polite">Bluetooth disconnected</div>
+        <div id="readout" class="readout" role="status" aria-live="off">C · 0</div>
+        <div class="settings">
+            <button id="stick-mode" class="mode" title="One control or two"
+                    aria-label="Switch between the direction pad and two sticks">2</button>
+            <button id="speed" class="mode speed" hidden title="Driving speed"
+                    aria-label="Driving speed for the direction pad">70</button>
+        </div>
+    </section>
+
+    <section class="side side-right">
+        <div id="arc" class="arc" role="group" aria-label="Steering and buttons">
+            <div id="stick-right" class="stick-well" role="application"
+                 aria-label="Right stick: left and right"></div>
+            <button class="action a" data-command="A"
+                    aria-label="A: turns the LEDs on and off">A</button>
+            <button class="action b" data-command="B"
+                    aria-label="B: angry face and horn">B</button>
+            <button class="action c" data-command="C"
+                    aria-label="C: changes the LED colour">C</button>
+        </div>
+    </section>
+
+    <div class="legend">
+        Use the arrow keys (or WASD) and the J, K and L keys
+    </div>
+
+    <button id="log-toggle" class="log-toggle" title="Diagnostic log"
+            aria-label="Show diagnostic log">?</button>
+</main>
+
+<pre id="log" class="log" aria-live="polite"></pre>
+
+<!-- The analogue stick: bobboteck/JoyStick, vendored (MIT). It draws the
+     control, tracks the thumb and gives us both a cardinal direction and a
+     distance from the centre, which is exactly the protocol below. -->
+<script src="joy.js"></script>
+
+<script>
+"use strict";
+
+/* ==================================================================
+   1. Global constants
+   ================================================================== */
+
+/* ------------------------------------------------------------------
+   Nordic UART Service, as exposed by MakeCode's bluetooth.startUartService().
+   The micro:bit reads with uartReadUntil("\n"), so each command needs an LF.
+   ------------------------------------------------------------------ */
+const UART_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+
+/* The micro:bit's UART profile is inverted relative to the usual Nordic UART
+   convention: 6e400002 is the micro:bit's TX (notify only) and 6e400003 is its
+   RX (write). Writing to 0002 fails with "GATT Error: Not supported". */
+const UART_RX      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"; // write:  browser -> micro:bit
+const UART_TX      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // notify: micro:bit -> browser
+
+/* ------------------------------------------------------------------
+   Protocol (see microbit/microbit-makecode.ts):
+
+     <DIR>,<SPEED>      where the sticks are: DIR is one of N NE E SE S SW W NW
+                        or C (centre), SPEED is 0..100 — how hard the driving
+                        stick is pushed. Held until the next command.
+     A | B | C          one-shot actions
+
+   The page does not work out wheel speeds. It says which way the car should
+   go and the micro:bit decides what each wheel does with that.
+
+   Two sticks, each locked to one axis, produce those nine directions between
+   them: the left one gives N, S or C and the right one E, W or C, and the two
+   names are concatenated. Splitting them across two thumbs is the whole point
+   — on one analogue stick, E and NE are neighbouring regions and a wobble turns
+   a curve into a spin.
+
+   The centre button offers a one-thumb mode anyway. That one is not an
+   analogue stick at all but a digital direction pad: a direction is a sector
+   the finger is in rather than a position it has to hold, so there is no
+   wobble to fold away and all nine directions — the two spins included — are
+   reachable and stay put. What the pad cannot give is a throw to measure, so
+   its speed comes from the speed button beside the mode button.
+
+   Note that "C" the colour button and "C,0" the centred sticks are different
+   commands; the micro:bit tells them apart by the comma, so no action command
+   may ever contain one. Speeds latch, and the browser sends a heartbeat while
+   moving so the micro:bit's watchdog can stop the car if the link dies. */
+
+const HEARTBEAT_MS = 350;   // must stay well under the micro:bit's watchdog
+const PUMP_MS      = 100;   // heartbeat tick and retry after a failed write
+
+const STOP = "C,0";         // sticks home — the one motion command that stops
+
+/* Neither the keyboard nor the direction pad has a throw to measure, so their
+   speed is picked rather than pushed. Three steps is all a child needs: gentle
+   enough to nose around a table, brisk, and flat out. The middle one is the
+   default — brisk enough to be useful, short of full tilt. */
+const SPEED_LEVELS = [40, 70, 100];
+const DEFAULT_SPEED = 70;
+
+/* Which speed the driver picked last, remembered between visits. */
+const SPEED_KEY = "carjoystick.speed";
+
+const IDLE_GLYPH = "ᛒ";
+const LIVE_GLYPH = "✓";
+
+/* Which stick layout the driver picked last, remembered between visits. */
+const MODE_KEY = "carjoystick.stickMode";
+
+/* How big to draw the sticks. joy.js takes its size once, at construction, so
+   this is re-measured and both sticks rebuilt when the window changes shape. */
+const STICK_MIN = 120;
+const STICK_MAX = 320;
+
+/* Where A, B and C sit on the arc around the right stick: degrees from the
+   3 o'clock position, growing clockwise, so 195°-255° is the upper-left
+   quadrant — the way the right thumb travels when it pivots off the stick.
+   30° apart, which is what keeps a clear gap between their rims: any closer
+   and three buttons that size read as one blob. */
+const ARC_ANGLES = { A: 195, B: 225, C: 255 };
+const ARC_GAP = 10;           // px between the stick's rim and a button's rim
+const BUTTON_RATIO = 0.28;    // button diameter, as a fraction of the stick's
+
+/* How far the outermost buttons reach along each axis: |cos 195°| and
+   |sin 255°| are both this, so the arc overhangs the stick by the same amount
+   to the left as it does upwards. */
+const ARC_SPREAD = 0.966;
+
+/* With one stick the three buttons have no stick to orbit, so they close up
+   into an even triangle instead: 120° apart, and a little bigger now that
+   there is room. The radius puts the same gap between their rims as the arc
+   does — adjacent centres on a 120° triangle are radius * sqrt(3) apart. */
+const CLUSTER_ANGLES = { A: 210, B: 330, C: 90 };
+const CLUSTER_BUTTON_RATIO = 0.34;
+
+/* The direction pad's eight sectors, 45° each, indexed by the finger's angle
+   rounded to the nearest eighth turn: index 0 is due east and they run
+   anticlockwise from there, because that is the way atan2 counts. */
+const PAD_SECTORS = ["E", "NE", "N", "NW", "W", "SW", "S", "SE"];
+
+/* How far out of the middle the finger has to be before the pad names a
+   direction at all, as a fraction of its radius. Big enough that resting a
+   thumb in the centre is not a command, small enough that it is never a fight
+   to get out of. */
+const PAD_DEAD_ZONE = 0.22;
+
+/* The arrows, as fractions of the pad's diameter: how big each triangle is and
+   how far its centre sits from the pad's. */
+const PAD_ARROW_SIZE = 0.17;
+const PAD_ARROW_REACH = 0.31;
+
+/* Which way each arrow points, as a rotation from "up". */
+const PAD_ARROW_ANGLES = { N: 0, E: 90, S: 180, W: 270 };
+
+const DIRECTIONS = new Set(["UP", "DOWN", "LEFT", "RIGHT"]);
+
+const KEY_MAP = {
+    arrowup: "UP",    w: "UP",
+    arrowdown: "DOWN", s: "DOWN",
+    arrowleft: "LEFT", a: "LEFT",
+    arrowright: "RIGHT", d: "RIGHT",
+    /* A B C sit on the home row: the letter keys are taken by WASD. */
+    j: "A", k: "B", l: "C"
+};
+
+const LOG_LIMIT = 80;   // lines kept in the diagnostic panel
+
+/* ==================================================================
+   2. Classes
+   ================================================================== */
+
+/* -------------------------------- Log --------------------------------
+   Errors here are easy to miss in the small status line, so every send
+   and every failure is also written to a panel toggled by the ? button. */
+
+class Logger {
+    constructor(element) {
+        this.element = element;
+        this.lines = [];
+    }
+
+    write(line) {
+        const stamp = new Date().toLocaleTimeString("en-GB", { hour12: false });
+        this.lines.push(stamp + "  " + line);
+        if (this.lines.length > LOG_LIMIT) this.lines.shift();
+        this.element.textContent = this.lines.join("\n");
+        this.element.scrollTop = this.element.scrollHeight;
+        console.log("[car] " + line);
+    }
+
+    static describe(error) {
+        if (!error) return "erro desconhecido";
+        return (error.name || "Error") + ": " + (error.message || String(error));
+    }
+}
+
+class CarController {
+    constructor() {
+        /* ---- DOM ---- */
+        this.bluetoothButton = document.getElementById("bluetooth");
+        this.bluetoothLabel  = document.getElementById("bluetooth-label");
+        this.statusEl        = document.getElementById("status");
+        this.logToggle       = document.getElementById("log-toggle");
+        this.leftWell        = document.getElementById("stick-left");
+        this.rightWell       = document.getElementById("stick-right");
+        this.dpad            = document.getElementById("dpad");
+        this.arc             = document.getElementById("arc");
+        this.readout         = document.getElementById("readout");
+        this.modeButton      = document.getElementById("stick-mode");
+        this.speedButton     = document.getElementById("speed");
+        this.logger          = new Logger(document.getElementById("log"));
+
+        /* ---- Bluetooth ---- */
+        this.device = null;
+        this.rxCharacteristic = null;
+        this.writeInFlight = false;   // one GATT write at a time, or it throws
+        this.statusLock = false;      // don't overwrite the "connecting..." message
+
+        /* ---- Send state ----
+           Only one GATT write may be in flight, and a press can change the wanted
+           speed faster than the radio can carry it. So instead of a queue of motion
+           commands — which would keep the car driving after the button came up — the
+           pump keeps a single *desired* state and always sends the newest one. One-shot
+           actions (A/B/C) are different: every one of them has to arrive, so they get a
+           real queue and jump ahead of motion. */
+        this.desiredMotion  = STOP;  // the state the car should be in right now
+        this.lastSentMotion = null;  // the state we last managed to put on the wire
+        this.lastMotionAt   = 0;
+        this.lastReported   = "";
+        this.actionQueue    = [];
+
+        /* ---- Where the car is being steered from ----
+           The left stick gives N, S or C; the right one E, W or C. Together
+           they name one of the nine directions. The keyboard is a third source
+           and only gets a say once both sticks are home, so letting go of a
+           stick hands the car back to a key that is still down rather than
+           stopping it. */
+        this.leftJoystick  = null;    // the joy.js instances
+        this.rightJoystick = null;
+        this.stickSize     = 0;       // so a resize can skip a rebuild
+
+        /* One control or two. With one, the left stick is replaced by the
+           direction pad and the right stick is gone, A/B/C staying behind as a
+           cluster. */
+        this.singleStick   = CarController.savedMode();
+        this.left  = { direction: "C", speed: 0 };
+        this.right = { direction: "C", speed: 0 };
+        this.padDirection = "C";      // where the direction pad is pointing
+        this.padPointer   = null;     // the finger the pad is following, if any
+        this.speed = CarController.savedSpeed();
+        this.held  = new Set();       // arrow/WASD keys currently down
+    }
+
+    /* ------------------------------ Startup ------------------------------ */
+
+    init() {
+        this.showMode();
+        this.showSpeed();
+        this.buildSticks();
+        this.bindPad();
+        this.bindControls();
+        this.bindKeyboard();
+        this.bindWindow();
+
+        /* The heartbeat and any retry after a failed write. Cheap when idle: the pump
+           returns immediately once there is nothing left to send. */
+        setInterval(() => { if (this.rxCharacteristic) this.pump(); }, PUMP_MS);
+
+        this.log("origin: " + location.origin + "  secure context: " + window.isSecureContext);
+
+        const startupProblem = CarController.unsupportedReason();
+        if (startupProblem) {
+            this.setStatus(startupProblem, true);
+            this.log("ERROR: " + startupProblem);
+        }
+    }
+
+    /* ------------------------------ Joysticks ----------------------------- */
+
+    /* joy.js reads the canvas size once, when it is constructed, so both sticks
+       are thrown away and rebuilt whenever the window changes shape. Destroy()
+       takes their document-level move handlers with them — without that they
+       would pile up and keep driving a canvas no longer on the page.
+
+       axisOnlyY / axisOnlyX are joy.js's own: they pin the other axis to the
+       centre, so getCardinalDirection can only ever answer N/S/C on the left
+       and E/W/C on the right. That is what makes an accidental spin impossible
+       — a sideways wobble on the left stick moves nothing at all.
+
+       In the single-control mode neither stick is built at all: the left-hand
+       side is the direction pad, which is plain DOM and only needs sizing. */
+    buildSticks() {
+        const size = this.stickSizeFor();
+        if (size === this.stickSize) return;
+
+        if (this.leftJoystick) this.leftJoystick.Destroy();
+        if (this.rightJoystick) this.rightJoystick.Destroy();
+        this.leftJoystick = null;
+        this.rightJoystick = null;
+
+        this.stickSize = size;
+
+        this.leftWell.hidden = this.singleStick;
+        this.dpad.hidden = !this.singleStick;
+        this.rightWell.style.display = this.singleStick ? "none" : "";
+
+        if (this.singleStick) {
+            this.layOutPad(size);
+        } else {
+            this.leftJoystick = this.buildStick("stick-left", this.leftWell, size,
+                { axisOnlyY: true }, status => this.onStickMoved("left", status));
+            this.rightJoystick = this.buildStick("stick-right", this.rightWell, size,
+                { axisOnlyX: true }, status => this.onStickMoved("right", status));
+        }
+
+        this.layOutArc(size);
+        this.showSticks();
+    }
+
+    /* The pad is drawn entirely in CSS, so this only has to size it: the plate
+       to the same diameter a stick would have had, and each arrow rotated out
+       from the centre along the direction it stands for. The rotation happens
+       before the outward shift, so `translateY(-reach)` moves each triangle the
+       way it is already pointing. */
+    layOutPad(size) {
+        this.dpad.style.width = size + "px";
+        this.dpad.style.height = size + "px";
+
+        const arrow = Math.round(size * PAD_ARROW_SIZE);
+        const reach = Math.round(size * PAD_ARROW_REACH);
+
+        this.dpad.querySelectorAll(".dpad-arrow").forEach(element => {
+            element.style.width = arrow + "px";
+            element.style.height = arrow + "px";
+            element.style.transform =
+                "translate(-50%, -50%) rotate(" +
+                PAD_ARROW_ANGLES[element.dataset.axis] + "deg) translateY(-" + reach + "px)";
+        });
+    }
+
+    buildStick(id, well, size, axis, onMove) {
+        well.style.width = size + "px";
+        well.style.height = size + "px";
+
+        const options = {
+            title: id + "-canvas",
+            width: size,
+            height: size,
+            internalFillColor: "#4285f4",
+            internalStrokeColor: "#2f6edb",
+            internalLineWidth: 2,
+            externalStrokeColor: "#5b5f67",
+            externalLineWidth: 3,
+            /* Draws the arrow for the free axis only, which says at a glance
+               which way each stick is willing to move. */
+            internalDrawArrows: true,
+            autoReturnToCenter: true
+        };
+        Object.assign(options, axis);
+
+        return new JoyStick(id, options, onMove);
+    }
+
+    /* A, B and C ride an arc off the right stick's upper-left. `.arc` is exactly
+       the stick's size, so its centre is the stick's centre and each button is
+       just a polar offset from it; they overflow the box on purpose.
+
+       With one stick there is no right stick to orbit, so the same three
+       buttons close into an even triangle and `.arc` shrinks to fit it — the
+       polar placing below is the same either way. */
+    layOutArc(size) {
+        const angles = this.singleStick ? CLUSTER_ANGLES : ARC_ANGLES;
+        const buttonSize = Math.round(
+            size * (this.singleStick ? CLUSTER_BUTTON_RATIO : BUTTON_RATIO));
+
+        const radius = this.singleStick
+            ? (buttonSize + ARC_GAP) / Math.sqrt(3)
+            : size / 2 + buttonSize / 2 + ARC_GAP;
+
+        const box = this.singleStick ? Math.round(2 * radius + buttonSize) : size;
+        this.arc.style.width = box + "px";
+        this.arc.style.height = box + "px";
+
+        Object.keys(angles).forEach(command => {
+            const element = this.arc.querySelector('[data-command="' + command + '"]');
+            if (!element) return;
+
+            const radians = angles[command] * Math.PI / 180;
+
+            element.style.width = buttonSize + "px";
+            element.style.height = buttonSize + "px";
+            element.style.fontSize = Math.round(buttonSize * 0.38) + "px";
+
+            /* 50% puts the button's top-left at the box centre; half its own
+               size pulls it back so the two centres line up. */
+            element.style.left =
+                "calc(50% + " + (radius * Math.cos(radians) - buttonSize / 2) + "px)";
+            element.style.top =
+                "calc(50% + " + (radius * Math.sin(radians) - buttonSize / 2) + "px)";
+        });
+    }
+
+    /**
+     * How far the arc sticks out past the stick's own edge, for a given stick
+     * size. Everything it depends on is a fraction of that size, so it comes out
+     * linear — which is what lets stickSizeFor solve for a fit instead of
+     * searching for one.
+     */
+    static arcOverhang(size) {
+        const button = size * BUTTON_RATIO;
+        const radius = size / 2 + button / 2 + ARC_GAP;
+        return ARC_SPREAD * radius + button / 2 - size / 2;
+    }
+
+    /** The largest stick whose arc still fits inside `room`, with the overhang
+     *  counted `sides` times — once when all the slack is on one side. */
+    static stickThatFits(room, sides) {
+        /* arcOverhang(size) = SLOPE * size + INTERCEPT; solve
+           size + sides * arcOverhang(size) <= room. */
+        const slope = CarController.arcOverhang(1) - CarController.arcOverhang(0);
+        const intercept = CarController.arcOverhang(0);
+        return (room - sides * intercept) / (1 + sides * slope);
+    }
+
+    /* Big enough to aim with a thumb, small enough that nothing spills out of
+       the panel. Horizontally the arc only has to clear one side: the sticks are
+       pushed to the outer edges, so every bit of slack in a column sits between
+       the stick and the middle, which is the way the arc reaches. Vertically it
+       reaches up only, but the stick is centred, so that slack is halved. */
+    stickSizeFor() {
+        /* The `.side` section, not `.arc`: the arc has no size of its own until
+           this very method has decided on one, so measuring it would read zero
+           and peg both sticks at their minimum forever. */
+        const column = this.arc.parentElement;
+        const room = Math.min(
+            CarController.stickThatFits(column.clientWidth, 1),
+            CarController.stickThatFits(column.clientHeight, 2)
+        );
+        /* Floor, not round: rounding up would put the outermost button half a
+           pixel past the column. The STICK_MIN floor can still overshoot on a
+           very narrow screen, by a few pixels that land in the panel's padding
+           — nothing on the way out clips, so that stays a cosmetic overlap. */
+        return Math.floor(Math.min(STICK_MAX, Math.max(STICK_MIN, room)));
+    }
+
+    /**
+     * joy.js hands us the cardinal direction and the thumb offset on each axis,
+     * both already normalised to ±100. Speed is the distance from the centre;
+     * with one axis pinned it is just that axis, so no capping is needed.
+     */
+    onStickMoved(side, status) {
+        const direction = status.cardinalDirection;
+        const speed = direction === "C"
+            ? 0
+            : Math.min(100, Math.round(Math.hypot(Number(status.x), Number(status.y))));
+
+        this[side] = { direction: direction, speed: speed };
+        this.showSticks();
+        this.setMotion(this.motionCommand());
+    }
+
+    showSticks() {
+        const command = this.motionCommand();
+        const live = command !== STOP;
+        this.readout.textContent = command.replace(",", " · ");
+        this.readout.classList.toggle("live", live);
+        this.showPad();
+    }
+
+    /* --------------------------- Direction pad ---------------------------- */
+
+    /* One finger owns the pad at a time, and it keeps it until it lifts: the
+       capture is what lets a thumb slide from "up" into the corner and have the
+       command follow it, instead of the gesture being dropped the moment it
+       leaves the triangle it started on. */
+    bindPad() {
+        this.dpad.addEventListener("pointerdown", event => {
+            event.preventDefault();
+            if (this.padPointer !== null) return;   // a second finger changes nothing
+            this.padPointer = event.pointerId;
+
+            /* Capture is what makes the slide work, but it is not what makes the
+               pad work: if the browser refuses it the press must still steer,
+               so it is taken separately from the aim below. */
+            try { this.dpad.setPointerCapture(event.pointerId); }
+            catch (error) { /* no slide past the rim, but the press still counts */ }
+
+            CarController.buzz(12);
+            this.aimPad(event);
+        });
+
+        this.dpad.addEventListener("pointermove", event => {
+            if (event.pointerId === this.padPointer) this.aimPad(event);
+        });
+
+        ["pointerup", "pointercancel"].forEach(type =>
+            this.dpad.addEventListener(type, event => {
+                if (event.pointerId !== this.padPointer) return;
+                this.padPointer = null;
+                this.setPad("C");
+            })
+        );
+
+        this.dpad.addEventListener("contextmenu", event => event.preventDefault());
+    }
+
+    /* Where the finger is, as one of the eight directions. Only the angle
+       matters, so a finger dragged outside the pad still steers — which is the
+       kinder behaviour when a thumb overshoots the rim mid-corner. */
+    aimPad(event) {
+        const rect = this.dpad.getBoundingClientRect();
+        const x = event.clientX - rect.left - rect.width / 2;
+        const y = rect.height / 2 - (event.clientY - rect.top);   // up positive
+        this.setPad(CarController.sectorAt(x, y, Math.min(rect.width, rect.height) / 2));
+    }
+
+    /** Which sector (x, y) falls in, measured from the centre of a pad of
+     *  radius `radius`. "C" while the finger is still in the dead zone. */
+    static sectorAt(x, y, radius) {
+        if (Math.hypot(x, y) < radius * PAD_DEAD_ZONE) return "C";
+
+        /* An eighth of a turn is PI/4, so the angle over that, rounded, is the
+           sector index — negative below the axis, hence the wrap. */
+        const eighth = Math.round(Math.atan2(y, x) / (Math.PI / 4));
+        return PAD_SECTORS[(eighth + 8) % 8];
+    }
+
+    setPad(direction) {
+        if (direction === this.padDirection) return;
+        this.padDirection = direction;
+        this.showSticks();
+        this.setMotion(this.motionCommand());
+    }
+
+    /* Both arrows light on a diagonal, which is what says NE is one command and
+       not a near miss between two. */
+    showPad() {
+        this.dpad.querySelectorAll(".dpad-arrow").forEach(element => {
+            element.classList.toggle("on",
+                this.padDirection.indexOf(element.dataset.axis) >= 0);
+        });
+    }
+
+    /* ------------------------------- Speed -------------------------------- */
+
+    static savedSpeed() {
+        try {
+            const saved = Number(localStorage.getItem(SPEED_KEY));
+            return SPEED_LEVELS.indexOf(saved) >= 0 ? saved : DEFAULT_SPEED;
+        } catch (error) { return DEFAULT_SPEED; }
+    }
+
+    /* Round-robin through the three steps. Changing speed mid-drive takes
+       effect at once rather than waiting for the finger to lift, so the button
+       can be used to ease off while already moving. */
+    cycleSpeed() {
+        const next = (SPEED_LEVELS.indexOf(this.speed) + 1) % SPEED_LEVELS.length;
+        this.speed = SPEED_LEVELS[next];
+        try { localStorage.setItem(SPEED_KEY, String(this.speed)); }
+        catch (error) { /* the speed still works, it just won't be remembered */ }
+
+        this.showSpeed();
+        this.showSticks();
+        this.setMotion(this.motionCommand());
+        CarController.buzz(12);
+    }
+
+    showSpeed() {
+        this.speedButton.textContent = String(this.speed);
+        this.speedButton.title = "Speed " + this.speed + "% — tap to change";
+        /* With two sticks the throw is the throttle, so there is nothing here
+           to set: the button only belongs to the pad. */
+        this.speedButton.hidden = !this.singleStick;
+    }
+
+    /* ----------------------------- Stick mode ----------------------------- */
+
+    static savedMode() {
+        /* Storage can throw outright in a locked-down browser, and a driver who
+           never picked gets the two-stick default. */
+        try { return localStorage.getItem(MODE_KEY) === "single"; }
+        catch (error) { return false; }
+    }
+
+    toggleStickMode() {
+        this.singleStick = !this.singleStick;
+        try {
+            localStorage.setItem(MODE_KEY, this.singleStick ? "single" : "dual");
+        } catch (error) { /* the mode still works, it just won't be remembered */ }
+
+        /* Stop before rebuilding: the car must not be left driving on an order
+           given by a control that is about to disappear. */
+        this.centreSticks();
+        this.setMotion(STOP);
+
+        this.stickSize = 0;   // the size hasn't changed, so force the rebuild
+        this.buildSticks();
+        this.showMode();
+        this.showSpeed();
+        CarController.buzz(12);
+    }
+
+    showMode() {
+        this.modeButton.textContent = this.singleStick ? "1" : "2";
+        this.modeButton.title = this.singleStick
+            ? "Direction pad — tap for two sticks"
+            : "Two sticks — tap for the direction pad";
+    }
+
+    /* ------------------------------ Bindings ------------------------------ */
+
+    bindControls() {
+        this.logToggle.addEventListener("click", () => {
+            document.body.classList.toggle("show-log");
+        });
+
+        this.bluetoothButton.addEventListener("click", () => this.toggleConnection());
+        this.modeButton.addEventListener("click", () => this.toggleStickMode());
+        this.speedButton.addEventListener("click", () => this.cycleSpeed());
+
+        document.querySelectorAll("[data-command]").forEach(button => {
+            const command = button.dataset.command;
+
+            button.addEventListener("pointerdown", event => {
+                event.preventDefault();
+                button.setPointerCapture(event.pointerId);   // keep the press if the finger slides
+                this.press(command);
+            });
+
+            ["pointerup", "pointercancel"].forEach(type =>
+                button.addEventListener(type, () => this.release(command))
+            );
+
+            button.addEventListener("contextmenu", event => event.preventDefault());
+        });
+    }
+
+    bindKeyboard() {
+        window.addEventListener("keydown", event => {
+            if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+            const command = KEY_MAP[event.key.toLowerCase()];
+            if (!command) return;
+
+            event.preventDefault();
+            if (!event.repeat) this.press(command);   // our own interval does the repeating
+        });
+
+        window.addEventListener("keyup", event => {
+            const command = KEY_MAP[event.key.toLowerCase()];
+            if (command) this.release(command);
+        });
+    }
+
+    bindWindow() {
+        /* Losing focus or visibility must not leave a button stuck down. */
+        window.addEventListener("blur", () => this.releaseAll());
+        document.addEventListener("visibilitychange", () => {
+            if (document.hidden) this.releaseAll();
+        });
+
+        /* Rebuilding mid-drag would lose the gesture, so it waits for the
+           resize to settle. Orientation changes report the old size for a
+           frame or two, hence the generous delay. */
+        let pending = 0;
+        window.addEventListener("resize", () => {
+            clearTimeout(pending);
+            pending = setTimeout(() => this.buildSticks(), 250);
+        });
+    }
+
+    /* ------------------------------- Status ------------------------------- */
+
+    setStatus(text, isError) {
+        this.statusEl.textContent = text;
+        this.statusEl.classList.toggle("error", Boolean(isError));
+    }
+
+    log(line) {
+        this.logger.write(line);
+    }
+
+    /* ----------------------------- Connection ----------------------------- */
+
+    static unsupportedReason() {
+        if (!window.isSecureContext) {
+            return "Open this page over HTTPS or on localhost to use Bluetooth.";
+        }
+        if (!navigator.bluetooth) {
+            return "This browser has no Web Bluetooth. Use Chrome, Edge or Opera.";
+        }
+        return null;
+    }
+
+    async toggleConnection() {
+        if (this.device && this.device.gatt && this.device.gatt.connected) {
+            /* Stop the wheels before dropping the link, instead of leaving the car
+               rolling until its watchdog fires. */
+            this.releaseAll();
+            await new Promise(resolve => setTimeout(resolve, 150));   // let the stop go out
+            this.device.gatt.disconnect();   // fires gattserverdisconnected
+        } else {
+            this.connect();
+        }
+    }
+
+    async connect() {
+        const reason = CarController.unsupportedReason();
+        if (reason) {
+            this.setStatus(reason, true);
+            return;
+        }
+
+        try {
+            this.setStatus("Pick your micro:bit from the list...");
+
+            /* The micro:bit does not advertise the UART service in its
+               advertisement packet, so filtering only by service finds nothing.
+               Filter by name and request UART as an optional service. */
+            this.device = await navigator.bluetooth.requestDevice({
+                filters: [
+                    { namePrefix: "BBC micro:bit" },
+                    { namePrefix: "micro:bit" },
+                    { services: [UART_SERVICE] }
+                ],
+                optionalServices: [UART_SERVICE]
+            });
+
+            this.device.addEventListener("gattserverdisconnected", () => this.onDisconnected());
+
+            this.bluetoothButton.classList.add("busy");
+            this.setStatus("Connecting...");
+            this.statusLock = true;
+
+            this.log("device: " + (this.device.name || "(sem nome)"));
+
+            const server  = await this.device.gatt.connect();
+            const service = await server.getPrimaryService(UART_SERVICE);
+            this.rxCharacteristic = await service.getCharacteristic(UART_RX);
+
+            const props = this.rxCharacteristic.properties || {};
+            this.log("write properties: write=" + Boolean(props.write) +
+                " writeWithoutResponse=" + Boolean(props.writeWithoutResponse));
+
+            /* The micro:bit's RX characteristic always advertises write. If it does
+               not, we are talking to the wrong characteristic, so dump the whole
+               service instead of failing silently on the first button press. */
+            if (!props.write && !props.writeWithoutResponse) {
+                await this.describeService(service);
+                this.log("PROBLEM: characteristic " + UART_RX + " does not accept writes.");
+                this.statusLock = false;
+                this.reset();
+                this.setStatus("UART service unreachable — see the log", true);
+                document.body.classList.add("show-log");
+                return;
+            }
+
+            await this.subscribeNotifications(service);
+
+            this.statusLock = false;
+            this.bluetoothButton.classList.remove("busy");
+            this.bluetoothButton.classList.add("connected");
+            this.bluetoothLabel.textContent = LIVE_GLYPH;
+            /* The pump opens with a stop so the car is known to be still; keep
+               that off the status line so the connection message survives. */
+            this.lastReported = STOP;
+            this.setStatus("Connected to " + (this.device.name || "micro:bit"));
+            this.log("connected");
+        } catch (error) {
+            this.statusLock = false;
+            this.reset();
+
+            if (error && error.name === "NotFoundError") {
+                this.setStatus("No micro:bit chosen.");
+                this.log("selection cancelled");
+            } else {
+                this.log("ERROR connecting: " + Logger.describe(error));
+                this.setStatus("Could not connect — see the log", true);
+            }
+        }
+    }
+
+    /* Listening to the notify characteristic is not needed to drive the
+       car, but anything arriving here proves the link really works. */
+    async subscribeNotifications(service) {
+        try {
+            const tx = await service.getCharacteristic(UART_TX);
+            await tx.startNotifications();
+            tx.addEventListener("characteristicvaluechanged", event => {
+                this.log("micro:bit said: " + new TextDecoder().decode(event.target.value));
+            });
+            this.log("notifications on");
+        } catch (error) {
+            this.log("no notifications (" + Logger.describe(error) + ") — does not stop the controls");
+        }
+    }
+
+    /* Dumps every characteristic the browser thinks the UART service has, which
+       is what distinguishes a stale cache from a genuinely different service. */
+    async describeService(service) {
+        try {
+            const characteristics = await service.getCharacteristics();
+            this.log("characteristics found on the UART service: " + characteristics.length);
+            characteristics.forEach(characteristic => {
+                const p = characteristic.properties || {};
+                const flags = Object.keys(p).filter(key => p[key]);
+                this.log("  " + characteristic.uuid + " → " +
+                    (flags.length ? flags.join(", ") : "(no properties)"));
+            });
+        } catch (error) {
+            this.log("could not list the characteristics: " + Logger.describe(error));
+        }
+    }
+
+    onDisconnected() {
+        this.reset();
+        this.setStatus("Bluetooth disconnected");
+    }
+
+    reset() {
+        this.rxCharacteristic = null;
+        this.writeInFlight = false;
+        this.clearHeld();               // silently: there is no link left to send a stop over
+        this.actionQueue.length = 0;
+        this.desiredMotion = STOP;
+        this.lastSentMotion = null;     // the next connection must resend the state
+        this.lastReported = "";
+        this.bluetoothButton.classList.remove("connected", "busy");
+        this.bluetoothLabel.textContent = IDLE_GLYPH;
+    }
+
+    /* ------------------------------- Sending ------------------------------- */
+
+    setMotion(command) {
+        this.desiredMotion = command;
+        this.pump();
+    }
+
+    sendAction(command) {
+        this.actionQueue.push(command);
+        this.pump();
+    }
+
+    /* What, if anything, still needs to go out. */
+    nextPayload() {
+        if (this.actionQueue.length) return this.actionQueue.shift();
+
+        if (this.desiredMotion !== this.lastSentMotion) return this.desiredMotion;
+
+        /* Moving: keep the watchdog fed. Stopped: nothing to say. */
+        if (this.desiredMotion !== STOP && performance.now() - this.lastMotionAt >= HEARTBEAT_MS) {
+            return this.desiredMotion;
+        }
+
+        return null;
+    }
+
+    async pump() {
+        if (this.writeInFlight) return;   // the running pump will pick up the new state
+
+        if (!this.rxCharacteristic) {
+            if (this.desiredMotion !== STOP || this.actionQueue.length) {
+                this.actionQueue.length = 0;
+                this.desiredMotion = STOP;
+                this.setStatus("Connect the micro:bit first.", true);
+            }
+            return;
+        }
+
+        this.writeInFlight = true;
+        try {
+            let command;
+            while ((command = this.nextPayload()) !== null) {
+                if (!this.rxCharacteristic) break;
+
+                try {
+                    await this.writeCharacteristic(new TextEncoder().encode(command + "\n"));
+                } catch (error) {
+                    /* Leave lastSentMotion alone so the next tick retries. A failed
+                       stop is the dangerous one, and it will be retried in ~100ms. */
+                    this.log("ERROR sending " + command + ": " + Logger.describe(error));
+                    this.setStatus("Send failed — see the log", true);
+                    break;
+                }
+
+                if (CarController.isMotion(command)) {
+                    this.lastSentMotion = command;
+                    this.lastMotionAt = performance.now();
+                }
+
+                this.report(command);
+            }
+        } finally {
+            this.writeInFlight = false;
+        }
+    }
+
+    /* Write-without-response is faster but is rejected with NotSupportedError when
+       the characteristic does not declare that property, so it is only attempted
+       when the properties say so, and it still falls back to an acknowledged write. */
+    async writeCharacteristic(payload) {
+        const properties = this.rxCharacteristic.properties || {};
+
+        if (properties.writeWithoutResponse && this.rxCharacteristic.writeValueWithoutResponse) {
+            try {
+                await this.rxCharacteristic.writeValueWithoutResponse(payload);
+                return;
+            } catch (error) {
+                this.log("writeValueWithoutResponse failed (" + Logger.describe(error) + "), using writeValue");
+            }
+        }
+
+        await this.rxCharacteristic.writeValue(payload);
+    }
+
+    /* A motion command is the one that carries a comma; that is also how the
+       micro:bit tells the centred stick "C,0" from the colour button "C". */
+    static isMotion(command) {
+        return command.indexOf(",") >= 0;
+    }
+
+    report(command) {
+        if (command === this.lastReported) return;   // don't log every heartbeat
+        this.lastReported = command;
+
+        this.log("sent: " + command);
+        if (this.statusLock) return;
+
+        if (command === STOP) {
+            this.setStatus("Stopped");
+        } else if (CarController.isMotion(command)) {
+            const [direction, speed] = command.split(",");
+            this.setStatus("Direction " + direction + "  ·  Speed " + speed);
+        } else {
+            this.setStatus("→ " + command);
+        }
+    }
+
+    /* --------------------------- Press handling --------------------------- */
+
+    /* The on-screen control has the wheel while it is off centre; the keys take
+       over only once it is home, so letting go of a stick or the pad hands a
+       still-held key back its direction instead of stopping the car.
+
+       With two sticks, speed comes from the left one whenever it is driving —
+       it is the one that decides how fast the car goes. Only when it is home
+       does the right stick set the pace, which is what gives a spin in place
+       its own throttle instead of a fixed rate. The pad and the keyboard have
+       no throw at all, so both take the speed the driver picked. */
+    motionCommand() {
+        /* The pad names the whole direction by itself, diagonals included, so
+           there is nothing to combine — combine() only knows single axis names
+           and would read "NE" as no vertical at all. */
+        if (this.singleStick) {
+            if (this.padDirection !== "C") {
+                return this.padDirection + "," + this.speed;
+            }
+            return this.keyedCommand();
+        }
+
+        const direction = CarController.combine(this.left.direction, this.right.direction);
+        if (direction === "C") return this.keyedCommand();
+
+        const speed = this.left.direction !== "C" ? this.left.speed : this.right.speed;
+        return direction + "," + speed;
+    }
+
+    /* What the held keys alone add up to. Unlike the two sticks, the keyboard
+       can ask for E and W — a spin in place — directly, which is also what the
+       pad's own left and right do. */
+    keyedCommand() {
+        const keyed = CarController.combine(...CarController.axesFor(this.held));
+        return keyed === "C" ? STOP : keyed + "," + this.speed;
+    }
+
+    /* The one place a direction name is built. Both steering sources — the two
+       sticks and the keyboard — reduce to a vertical name and a horizontal one,
+       and the nine directions are just those concatenated: "N" + "E" is "NE",
+       "" + "E" is "E", and nothing at all is "C". */
+    static combine(vertical, horizontal) {
+        const north = vertical === "N" || vertical === "S" ? vertical : "";
+        const east  = horizontal === "E" || horizontal === "W" ? horizontal : "";
+        return (north + east) || "C";
+    }
+
+    /* Held keys, reduced to the same pair of axis names a stick would give. */
+    static axesFor(keys) {
+        const forward = (keys.has("UP") ? 1 : 0) - (keys.has("DOWN") ? 1 : 0);
+        const side    = (keys.has("RIGHT") ? 1 : 0) - (keys.has("LEFT") ? 1 : 0);
+
+        return [
+            forward > 0 ? "N" : forward < 0 ? "S" : "",
+            side    > 0 ? "E" : side    < 0 ? "W" : ""
+        ];
+    }
+
+    press(command) {
+        if (!DIRECTIONS.has(command)) {
+            this.sendAction(command);
+            CarController.buzz(12);
+            this.flash(command);
+            return;
+        }
+
+        if (this.held.has(command)) return;
+        this.held.add(command);
+        CarController.buzz(12);
+
+        this.setMotion(this.motionCommand());
+    }
+
+    release(command) {
+        if (!this.held.has(command)) return;
+        this.held.delete(command);
+
+        this.setMotion(this.motionCommand());
+    }
+
+    /* joy.js only recentres on a pointer release, which never arrives if the tab
+       is hidden mid-drag — and the pad has the same hole — so every control is
+       centred here too rather than leaving the car with a standing order to
+       drive. */
+    releaseAll() {
+        this.centreSticks();
+        this.setMotion(STOP);
+    }
+
+    /* Forget every held key without sending anything (used when the link is
+       already gone). The micro:bit's own watchdog stops the car in that case. */
+    clearHeld() {
+        this.centreSticks();
+    }
+
+    centreSticks() {
+        this.held.clear();
+        this.left  = { direction: "C", speed: 0 };
+        this.right = { direction: "C", speed: 0 };
+        this.padDirection = "C";
+
+        /* Hand the finger back as well: without this the pad would keep the
+           capture and go on steering from a gesture the page has disowned. */
+        if (this.padPointer !== null) {
+            try { this.dpad.releasePointerCapture(this.padPointer); }
+            catch (error) { /* already gone with the pointer */ }
+            this.padPointer = null;
+        }
+
+        this.showSticks();
+    }
+
+    /* Action buttons have no held state, so their press just blinks. */
+    flash(command) {
+        const button = this.buttonFor(command);
+        if (!button) return;
+        button.classList.add("active");
+        setTimeout(() => button.classList.remove("active"), 120);
+    }
+
+    buttonFor(command) {
+        return document.querySelector('[data-command="' + command + '"]');
+    }
+
+    static buzz(ms) {
+        try { if (navigator.vibrate) navigator.vibrate(ms); } catch (error) { /* ignore */ }
+    }
+}
+
+/* ==================================================================
+   3. Instantiation and startup
+   ================================================================== */
+
+const controller = new CarController();
+controller.init();
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.MicrobitCar" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#202124</item>
+        <item name="android:navigationBarColor">#202124</item>
+        <item name="android:windowBackground">#202124</item>
+    </style>
+</resources>
